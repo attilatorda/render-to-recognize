@@ -1,0 +1,561 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="description" content="Recognize a blurred, occluded object by re-rendering every candidate shape across a grid of poses and keeping the closest match. No training, just a fast signed-distance-field renderer and a search.">
+<title>SDF Recognition Lab: render and compare</title>
+<style>
+  :root{
+    --ink:#e9e4d8; --dim:#8a8578; --line:#2a2a24;
+    --panel:rgba(14,14,12,.72); --accent:#7fd1c8; --good:#8fd18a; --bad:#d18a8a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:#0a0a09;color:var(--ink);overflow:hidden;
+    font-family:"IBM Plex Sans",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+
+  .home{position:fixed;top:14px;left:16px;z-index:30;font-size:12px;color:var(--dim);
+    text-decoration:none;background:var(--panel);backdrop-filter:blur(12px);
+    border:1px solid var(--line);border-radius:9px;padding:7px 11px}
+  .home:hover{color:var(--accent);border-color:var(--accent)}
+  /* the tab bar is centred and fixed too, so shrink the back-link to its arrow
+     on narrow screens rather than letting the two collide */
+  @media(max-width:560px){.home{padding:6px 9px}.home .lbl{display:none}}
+
+  /* tabs */
+  .tabbar{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:20;
+    display:flex;flex-direction:column;align-items:center;gap:7px;max-width:calc(100vw - 32px)}
+  .tabs{display:flex;gap:6px;
+    background:var(--panel);backdrop-filter:blur(12px);border:1px solid var(--line);border-radius:11px;padding:5px}
+  .tabs button{font:inherit;font-size:13px;color:var(--dim);background:transparent;border:none;
+    border-radius:7px;padding:7px 16px;cursor:pointer}
+  .tabs button.on{color:#0a0a09;background:var(--accent)}
+  .tabnote{font-size:11.5px;color:var(--dim);text-align:center;line-height:1.45;
+    background:var(--panel);backdrop-filter:blur(12px);border-radius:8px;padding:4px 10px}
+
+  .view{position:fixed;inset:0;display:none}
+  .view.on{display:block}
+
+  /* shapes */
+  #gl{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+  #gl:active{cursor:grabbing}
+  .panel{position:fixed;left:16px;bottom:16px;z-index:10;width:min(310px,calc(100vw - 32px));
+    background:var(--panel);backdrop-filter:blur(12px);border:1px solid var(--line);border-radius:14px;padding:15px}
+  .title{font-size:13.5px;margin-bottom:2px}
+  .sub{font-size:11.5px;color:var(--dim);line-height:1.5;margin-bottom:12px}
+  .shapes{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+  .shapes button,.modes button{font:inherit;font-size:11.5px;color:var(--dim);background:transparent;
+    border:1px solid var(--line);border-radius:8px;padding:6px 9px;cursor:pointer}
+  .shapes button.on,.modes button.on{color:#0a0a09;background:var(--accent);border-color:var(--accent)}
+  .row{margin:10px 0}
+  .row label{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-bottom:5px}
+  .row label b{color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums}
+  input[type=range]{width:100%;height:20px;-webkit-appearance:none;background:transparent}
+  input[type=range]::-webkit-slider-runnable-track{height:2px;background:var(--line);border-radius:2px}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;margin-top:-6px;border-radius:50%;background:var(--accent)}
+  input[type=range]::-moz-range-track{height:2px;background:var(--line)}
+  input[type=range]::-moz-range-thumb{width:14px;height:14px;border:none;border-radius:50%;background:var(--accent)}
+  .aarow{display:flex;align-items:center;gap:8px;margin-top:10px}
+  .aarow .lbl{font-size:12px;color:var(--dim);white-space:nowrap}
+  .modes{display:flex;gap:6px;flex:1}
+  .modes button{flex:1;padding:6px 4px}
+  .fps{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;width:50px;text-align:right}
+  .spin{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--dim);cursor:pointer;user-select:none}
+  .spin input{accent-color:var(--accent)}
+
+  /* recognize */
+  .lab{position:fixed;inset:0;overflow-y:auto;padding:96px 18px 24px}
+  .lab-inner{max-width:560px;margin:0 auto}
+  .lead{font-size:12.5px;color:var(--dim);line-height:1.55;margin-bottom:16px}
+  .lead b{color:var(--ink);font-weight:500}
+  .cands{background:rgba(255,255,255,.02);border:1px solid var(--line);border-radius:12px;
+    padding:12px;margin-bottom:14px}
+  .cands h4{font-size:11px;color:var(--dim);font-weight:500;margin-bottom:10px;letter-spacing:.2px}
+  .cands .strip{display:flex;gap:8px;justify-content:space-between}
+  .cands .c{flex:1;text-align:center;min-width:0}
+  .cands canvas{width:100%;max-width:74px;aspect-ratio:1;background:#0a0a09;border-radius:7px;border:1px solid var(--line)}
+  .cands .cl{font-size:10px;color:var(--dim);margin-top:5px;line-height:1.3}
+  .stage{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+  .cell{background:rgba(255,255,255,.02);border:1px solid var(--line);border-radius:12px;padding:12px;text-align:center}
+  .cell h4{font-size:11px;color:var(--dim);font-weight:500;margin-bottom:9px;letter-spacing:.2px}
+  .cell canvas{width:100%;max-width:190px;aspect-ratio:1;background:#0a0a09;border-radius:8px;image-rendering:auto}
+  .ctrls{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:15px;margin-bottom:14px}
+  .btns{display:flex;gap:8px;margin-top:12px}
+  .btns button{flex:1;font:inherit;font-size:13px;padding:10px;border-radius:9px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--ink)}
+  .btns button.primary{background:var(--accent);color:#0a0a09;border-color:var(--accent)}
+  .btns button:disabled{opacity:.4;cursor:default}
+  .budget{font-size:11.5px;color:var(--dim);margin-top:12px;font-variant-numeric:tabular-nums}
+  .budget b{color:var(--ink);font-weight:500}
+  .prog{height:3px;background:var(--line);border-radius:2px;margin-top:7px;overflow:hidden}
+  .prog>div{height:100%;width:0;background:var(--accent);transition:width .05s linear}
+  .verdict{font-size:15px;margin:4px 0 12px}
+  .verdict b{font-weight:600}
+  .meta{font-size:12px;color:var(--dim);line-height:1.6}
+  .rank{margin-top:12px}
+  .rank .r{display:flex;align-items:center;gap:10px;margin:5px 0;font-size:12px}
+  .rank .name{width:120px;color:var(--ink)}
+  .rank .bar{flex:1;height:7px;background:var(--line);border-radius:4px;overflow:hidden}
+  .rank .bar>div{height:100%;background:var(--accent)}
+  .rank .sc{width:42px;text-align:right;color:var(--dim);font-variant-numeric:tabular-nums}
+  .empty{color:var(--dim);font-size:12.5px;text-align:center;padding:18px}
+</style>
+
+<a class="home" href="index.html">&larr;<span class="lbl"> Render to Recognize</span></a>
+
+<div class="tabbar">
+  <div class="tabs">
+    <button id="tabSculpt" class="on">Shapes</button>
+    <button id="tabRec">Recognize</button>
+  </div>
+  <div class="tabnote" id="tabNote"></div>
+</div>
+
+<!-- ============ SHAPES ============ -->
+<div id="viewSculpt" class="view on">
+  <canvas id="gl"></canvas>
+  <div class="panel">
+    <div class="title">Shape library</div>
+    <div class="sub">Every shape is a pure equation, including the holed cube, carved with a subtract op (<code>max(box, &minus;hole)</code>). Scroll or pinch to magnify.</div>
+    <div class="shapes" id="shapeBtns"></div>
+    <div class="row">
+      <label>Zoom (magnification) <b id="vZoom"></b></label>
+      <input id="zoom" type="range" min="0" max="6" step="0.005" value="0">
+    </div>
+    <div class="row">
+      <label>Sculpt detail <b id="vDetail"></b></label>
+      <input id="detail" type="range" min="0" max="0.35" step="0.005" value="0.05">
+    </div>
+    <div class="row">
+      <label>Hole size (holed cube) <b id="vHole"></b></label>
+      <input id="hole" type="range" min="0.2" max="0.62" step="0.01" value="0.45">
+    </div>
+    <div class="aarow">
+      <span class="lbl">Edges</span>
+      <div class="modes" id="aaBtns">
+        <button data-aa="1">Off</button>
+        <button data-aa="2" class="on">2&times;2</button>
+        <button data-aa="3">3&times;3</button>
+      </div>
+      <span class="fps" id="fps">&nbsp;</span>
+    </div>
+    <label class="spin"><input id="spin" type="checkbox" checked> auto-rotate &middot; drag to orbit</label>
+  </div>
+</div>
+
+<!-- ============ RECOGNIZE ============ -->
+<div id="viewRec" class="view">
+  <div class="lab"><div class="lab-inner">
+    <div class="lead">
+      <b>Analysis by synthesis.</b> One object is rendered at a hidden pose, then blurred and occluded. That degraded image is the observation.
+      To recognize it, the lab re-renders every shape across a grid of poses and keeps the closest match.
+      There is no training here, only a fast renderer and a search.
+    </div>
+
+    <div class="cands">
+      <h4>THE SEARCH SPACE</h4>
+      <div class="strip" id="candStrip"></div>
+    </div>
+
+    <div class="stage">
+      <div class="cell"><h4>What the recognizer sees</h4><canvas id="obsC" width="64" height="64"></canvas></div>
+      <div class="cell"><h4>Closest render found</h4><canvas id="matchC" width="64" height="64"></canvas></div>
+    </div>
+
+    <div class="ctrls">
+      <div class="row">
+        <label>Blur <b id="vBlur"></b></label>
+        <input id="blur" type="range" min="0" max="1" step="0.01" value="0.3">
+      </div>
+      <div class="row">
+        <label>Occlusion <b id="vOcc"></b></label>
+        <input id="occ" type="range" min="0" max="1" step="0.01" value="0.25">
+      </div>
+      <div class="btns">
+        <button id="newObs">New observation</button>
+        <button id="run" class="primary">Recognize</button>
+      </div>
+      <div class="budget" id="budget"></div>
+      <div class="prog"><div id="progBar"></div></div>
+    </div>
+
+    <div id="results" class="ctrls"></div>
+  </div></div>
+</div>
+
+<script>
+const gl = document.getElementById('gl').getContext('webgl', {preserveDrawingBuffer:true});
+const glCanvas = document.getElementById('gl');
+
+const OBJECTS = [
+  {id:0, name:'Sphere'},
+  {id:1, name:'Three capsules'},
+  {id:2, name:'Chair'},
+  {id:3, name:'Torus'},
+  {id:4, name:'Holed cube'},
+];
+
+const VERT = `attribute vec2 aPos; void main(){ gl_Position=vec4(aPos,0.0,1.0);} `;
+const FRAG = `
+precision highp float;
+uniform vec2  uRes;
+uniform float uYaw, uPitch, uDist, uDetail, uHole, uZoom;
+uniform int   uObj;
+uniform int   uAA;    // 1 = off, 2 = 2x2, 3 = 3x3. Always 1 on the offscreen path.
+uniform int   uOct;   // fBm octaves, raised with magnification
+
+float hash(vec3 p){p=fract(p*0.3183099+0.1);p*=17.0;return fract(p.x*p.y*p.z*(p.x+p.y+p.z));}
+float noise(vec3 x){vec3 i=floor(x),f=fract(x);f=f*f*(3.0-2.0*f);
+  return mix(mix(mix(hash(i+vec3(0,0,0)),hash(i+vec3(1,0,0)),f.x),mix(hash(i+vec3(0,1,0)),hash(i+vec3(1,1,0)),f.x),f.y),
+             mix(mix(hash(i+vec3(0,0,1)),hash(i+vec3(1,0,1)),f.x),mix(hash(i+vec3(0,1,1)),hash(i+vec3(1,1,1)),f.x),f.y),f.z);}
+float fbm(vec3 p){float v=0.0,a=0.5;for(int i=0;i<12;i++){if(i>=uOct)break;v+=a*noise(p);p*=2.02;a*=0.5;}return v;}
+float smin(float a,float b,float k){float h=clamp(0.5+0.5*(b-a)/k,0.0,1.0);return mix(b,a,h)-k*h*(1.0-h);}
+
+float sdBox(vec3 p,vec3 b){vec3 q=abs(p)-b;return length(max(q,0.0))+min(max(q.x,max(q.y,q.z)),0.0);}
+float sdCap(vec3 p,vec3 a,vec3 b,float r){vec3 pa=p-a,ba=b-a;float h=clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0);return length(pa-ba*h)-r;}
+float sdTorus(vec3 p,vec2 t){vec2 q=vec2(length(p.xz)-t.x,p.y);return length(q)-t.y;}
+
+// ---- SHAPE LIBRARY (each is an equation, zero vertices) ----
+float mapObj(vec3 p){
+  float d;
+  if(uObj==0){                       // sphere (with carved detail)
+    d = length(p)-1.0; d -= fbm(p*4.0)*uDetail;
+  }else if(uObj==1){                 // three capsules fused by a smooth union
+    float c1=sdCap(p,vec3(-0.9,-0.3,0.0),vec3(-0.2,0.4,0.0),0.33);
+    float c2=sdCap(p,vec3(-0.2,0.4,0.0),vec3(0.5,-0.2,0.0),0.33);
+    float c3=sdCap(p,vec3(0.5,-0.2,0.0),vec3(1.0,0.5,0.0),0.33);
+    d = smin(smin(c1,c2,0.25),c3,0.25); d -= fbm(p*4.0)*uDetail;
+  }else if(uObj==2){                 // chair: union of seat, back, four legs
+    float seat=sdBox(p-vec3(0.0,0.0,0.0),vec3(0.55,0.09,0.55));
+    float back=sdBox(p-vec3(0.0,0.55,-0.48),vec3(0.55,0.5,0.09));
+    float lg=min(min(sdCap(p,vec3(-0.45,-0.09,-0.45),vec3(-0.45,-0.78,-0.45),0.07),
+                     sdCap(p,vec3( 0.45,-0.09,-0.45),vec3( 0.45,-0.78,-0.45),0.07)),
+                 min(sdCap(p,vec3(-0.45,-0.09, 0.45),vec3(-0.45,-0.78, 0.45),0.07),
+                     sdCap(p,vec3( 0.45,-0.09, 0.45),vec3( 0.45,-0.78, 0.45),0.07)));
+    d = min(min(seat,back),lg);
+  }else if(uObj==3){                 // torus
+    d = sdTorus(p,vec2(0.75,0.33));
+  }else{                             // holed cube: a SUBTRACT op bores the tunnel
+    float box=sdBox(p,vec3(0.82));
+    float cyl=length(p.xy)-uHole;
+    d = max(box,-cyl);
+  }
+  return d;
+}
+// The normal epsilon narrows with magnification, so zooming in resolves detail
+// instead of averaging it away. At 1x it is the value the offscreen path uses.
+vec3 nrm(vec3 p){vec2 e=vec2(0.0007/uZoom,0.0);
+  return normalize(vec3(mapObj(p+e.xyy)-mapObj(p-e.xyy),mapObj(p+e.yxy)-mapObj(p-e.yxy),mapObj(p+e.yyx)-mapObj(p-e.yyx)));}
+mat3 orbit(float y,float pt){float cy=cos(y),sy=sin(y),cp=cos(pt),sp=sin(pt);
+  return mat3(cy,0.0,-sy, sy*sp,cp,cy*sp, sy*cp,-sp,cy*cp);}
+
+// Returns pre-gamma color with coverage in alpha. Averaging the alpha is what
+// makes the silhouette soft.
+vec4 shade(vec2 uv){
+  mat3 R=orbit(uYaw,uPitch);
+  vec3 ro=R*vec3(0.0,0.0,uDist);
+  vec3 ww=normalize(-ro), uu=normalize(cross(ww,R*vec3(0,1,0))), vv=cross(uu,ww);
+  // Focal zoom: narrow the ray fan rather than dolly the camera in.
+  vec3 rd=normalize(uv.x*uu+uv.y*vv+1.7*uZoom*ww);
+  float t=0.0,tmax=uDist+3.0; bool hit=false;
+  for(int i=0;i<110;i++){vec3 p=ro+rd*t;float d=mapObj(p);if(d<0.001*t/uZoom){hit=true;break;}t+=d*0.85;if(t>tmax)break;}
+  if(!hit) return vec4(0.0);                        // transparent bg, clean silhouette
+  vec3 p=ro+rd*t; vec3 n=nrm(p);
+  vec3 L=normalize(vec3(0.6,0.85,0.5));
+  float diff=clamp(dot(n,L),0.0,1.0);
+  float spec=pow(clamp(dot(reflect(-L,n),-rd),0.0,1.0),24.0);
+  vec3 col=vec3(0.82,0.5,0.34)*(0.18+0.9*diff)+spec*0.3;
+  return vec4(col,1.0);
+}
+
+void main(){
+  float n=float(uAA);
+  vec4 acc=vec4(0.0);
+  for(int i=0;i<9;i++){
+    if(i>=uAA*uAA) break;
+    float fi=float(i);
+    vec2 g=(vec2(mod(fi,n),floor(fi/n))+0.5)/n-0.5;
+    g=mat2(0.894,-0.447, 0.447,0.894)*g;            // rotated grid
+    acc+=shade((gl_FragCoord.xy+g-0.5*uRes)/uRes.y);
+  }
+  acc/=float(uAA*uAA);
+  // Un-premultiply: the averaged rgb carries coverage, but the blend mode and
+  // the 2D compositing downstream both expect straight alpha.
+  vec3 col=acc.rgb/max(acc.a,1e-4);
+  // Gamma applies once, after averaging.
+  gl_FragColor=vec4(pow(col,vec3(0.4545)),acc.a);
+}`;
+
+function sh(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
+  if(!gl.getShaderParameter(o,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(o);return o;}
+const prog=gl.createProgram();
+gl.attachShader(prog,sh(gl.VERTEX_SHADER,VERT));gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FRAG));
+gl.linkProgram(prog);gl.useProgram(prog);
+const vb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vb);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+const aPos=gl.getAttribLocation(prog,'aPos');gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+const U=n=>gl.getUniformLocation(prog,n);
+const u={res:U('uRes'),yaw:U('uYaw'),pitch:U('uPitch'),dist:U('uDist'),detail:U('uDetail'),
+         hole:U('uHole'),obj:U('uObj'),zoom:U('uZoom'),aa:U('uAA'),oct:U('uOct')};
+
+// offscreen low-res target for recognition renders
+const RES=64;
+const BASE_OCT=5;   // the octave count every offscreen render uses
+function makeFBO(res){
+  const tex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,res,res,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  const fb=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);return {fb,res};
+}
+const FBO=makeFBO(RES);
+
+// Render an object at a pose. target=FBO returns a pixel buffer, target=null
+// draws to the screen. Supersampling and zoom are on-screen only: the offscreen
+// path has to stay pixel-for-pixel what score() was calibrated against.
+function render(obj,yaw,pitch,detail,hole,target){
+  if(target){gl.bindFramebuffer(gl.FRAMEBUFFER,target.fb);gl.viewport(0,0,target.res,target.res);gl.uniform2f(u.res,target.res,target.res);
+    gl.uniform1f(u.zoom,1.0);gl.uniform1i(u.aa,1);gl.uniform1i(u.oct,BASE_OCT);}
+  else{gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,glCanvas.width,glCanvas.height);gl.uniform2f(u.res,glCanvas.width,glCanvas.height);
+    gl.uniform1f(u.zoom,S.zoom);gl.uniform1i(u.aa,S.aa);gl.uniform1i(u.oct,S.oct);}
+  gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.uniform1f(u.yaw,yaw);gl.uniform1f(u.pitch,pitch);gl.uniform1f(u.dist,3.3);
+  gl.uniform1f(u.detail,detail);gl.uniform1f(u.hole,hole);gl.uniform1i(u.obj,obj);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  if(target){const buf=new Uint8Array(target.res*target.res*4);
+    gl.readPixels(0,0,target.res,target.res,gl.RGBA,gl.UNSIGNED_BYTE,buf);
+    gl.bindFramebuffer(gl.FRAMEBUFFER,null);return buf;}
+}
+
+// ---------- SHAPES tab ----------
+const S={obj:2,detail:0.05,hole:0.45,yaw:0.6,pitch:-0.25,spin:true,zoom:1,aa:2,oct:BASE_OCT};
+const shapeBtns=document.getElementById('shapeBtns');
+OBJECTS.forEach(o=>{const b=document.createElement('button');b.textContent=o.name;if(o.id===S.obj)b.classList.add('on');
+  b.onclick=()=>{S.obj=o.id;[...shapeBtns.children].forEach(c=>c.classList.remove('on'));b.classList.add('on');};
+  shapeBtns.appendChild(b);});
+const bindR=(id,key,fmt,out)=>{const el=document.getElementById(id),o=document.getElementById(out);
+  const f=()=>{S[key]=parseFloat(el.value);o.textContent=fmt(S[key]);};el.oninput=f;f();};
+bindR('detail','detail',v=>v.toFixed(3),'vDetail');
+bindR('hole','hole',v=>v.toFixed(2),'vHole');
+
+// Zoom is logarithmic: the slider carries log2(magnification).
+const zoomEl=document.getElementById('zoom'),vZoom=document.getElementById('vZoom');
+function setZoom(z){
+  S.zoom=Math.max(1,Math.min(64,z));
+  zoomEl.value=Math.log2(S.zoom);
+  vZoom.textContent=(S.zoom<10?S.zoom.toFixed(2):S.zoom.toFixed(1))+'×';
+  const pxWorld=(3.3-1.0)/(1.7*S.zoom*Math.max(1,glCanvas.height));
+  S.oct=Math.max(BASE_OCT,Math.min(12,Math.ceil(Math.log2(1/(8*pxWorld))/Math.log2(2.02))));
+}
+zoomEl.oninput=()=>setZoom(Math.pow(2,parseFloat(zoomEl.value)));
+
+document.querySelectorAll('#aaBtns button').forEach(b=>{
+  b.onclick=()=>{document.querySelectorAll('#aaBtns button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');S.aa=parseInt(b.dataset.aa);resize();};
+});
+const spinBox=document.getElementById('spin');
+spinBox.onchange=e=>S.spin=e.target.checked;
+
+// drag to orbit, two fingers to pinch-zoom
+const ptrs=new Map();
+let drag=false,pinch=0;
+function pinchDist(){const a=[...ptrs.values()];return Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y);}
+glCanvas.addEventListener('pointerdown',e=>{
+  ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(ptrs.size===1){drag=true;S.spin=false;spinBox.checked=false;}
+  else if(ptrs.size===2){drag=false;pinch=pinchDist();}
+});
+addEventListener('pointermove',e=>{
+  const p=ptrs.get(e.pointerId);if(!p)return;
+  const px=p.x,py=p.y;p.x=e.clientX;p.y=e.clientY;
+  if(ptrs.size===2){const d=pinchDist();if(pinch>0)setZoom(S.zoom*d/pinch);pinch=d;}
+  else if(drag){S.yaw-=(e.clientX-px)*0.008;S.pitch=Math.max(-1.4,Math.min(1.4,S.pitch+(e.clientY-py)*0.008));}
+});
+const lift=e=>{ptrs.delete(e.pointerId);if(ptrs.size<2)pinch=0;if(ptrs.size===0)drag=false;};
+addEventListener('pointerup',lift);
+addEventListener('pointercancel',lift);
+glCanvas.addEventListener('wheel',e=>{e.preventDefault();setZoom(S.zoom*Math.exp(-e.deltaY*0.0015));},{passive:false});
+
+function resize(){const dpr=Math.min(devicePixelRatio||1,S.aa>1?1.5:1.75);
+  glCanvas.width=innerWidth*dpr;glCanvas.height=innerHeight*dpr;setZoom(S.zoom);}
+addEventListener('resize',resize);resize();
+setZoom(1);
+
+const fpsEl=document.getElementById('fps');
+let fpsAcc=0,fpsN=0,fpsLast=performance.now();
+let sculptOn=true;
+function loop(){
+  if(sculptOn){
+    if(S.spin)S.yaw+=0.004;
+    render(S.obj,S.yaw,S.pitch,S.detail,S.hole,null);
+    const now=performance.now();fpsAcc+=now-fpsLast;fpsLast=now;fpsN++;
+    if(fpsN>=20){fpsEl.textContent=Math.round(1000/(fpsAcc/fpsN))+' fps';fpsAcc=0;fpsN=0;}
+  } else { fpsLast=performance.now(); }
+  requestAnimationFrame(loop);
+}
+loop();
+
+// ---------- RECOGNIZE tab ----------
+const R={blur:0.3,occ:0.25,truth:null,obs:null};
+// Occlusion blobs are drawn once, when the observation is made, and reused.
+// Re-rolling them on every slider event made the image thrash mid-drag.
+const MAXBLOBS=9;
+function bindRec(id,key,fmt,out){const el=document.getElementById(id),o=document.getElementById(out);
+  const f=()=>{R[key]=parseFloat(el.value);o.textContent=fmt(R[key]);if(R.truth)redegrade();};el.oninput=f;f();}
+bindRec('blur','blur',v=>Math.round(v*100)+'%','vBlur');
+bindRec('occ','occ',v=>Math.round(v*100)+'%','vOcc');
+
+function boxBlur(src,res,r){if(r<=0)return src.slice();const out=new Uint8Array(src.length);
+  for(let y=0;y<res;y++)for(let x=0;x<res;x++){let a=0,g0=0,g1=0,g2=0,c=0;
+    for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){const xx=x+dx,yy=y+dy;
+      if(xx>=0&&xx<res&&yy>=0&&yy<res){const i=(yy*res+xx)*4;g0+=src[i];g1+=src[i+1];g2+=src[i+2];a+=src[i+3];c++;}}
+    const o=(y*res+x)*4;out[o]=g0/c;out[o+1]=g1/c;out[o+2]=g2/c;out[o+3]=a/c;}
+  return out;}
+
+function makeBlobs(res){const b=[];
+  for(let j=0;j<MAXBLOBS;j++)b.push({cx:Math.random()*res,cy:Math.random()*res,rad:res*(0.07+Math.random()*0.10)});
+  return b;}
+
+function degrade(src,res,blur,occ,blobs){
+  const buf=boxBlur(src,res,Math.round(blur*3));
+  const k=Math.round(occ*MAXBLOBS);
+  for(let j=0;j<k;j++){const {cx,cy,rad}=blobs[j];
+    for(let y=0;y<res;y++)for(let x=0;x<res;x++){const dx=x-cx,dy=y-cy;
+      if(dx*dx+dy*dy<rad*rad){const i=(y*res+x)*4;buf[i]=0;buf[i+1]=0;buf[i+2]=0;buf[i+3]=0;}}}
+  return buf;}
+
+// score over the UNION of both silhouettes, so missing pixels cost gracefully
+function score(obs,cand,res){let err=0,n=0;
+  for(let i=0;i<res*res;i++){const oa=obs[i*4+3],ca=cand[i*4+3];
+    if(oa>4||ca>4){const og=(obs[i*4]*0.299+obs[i*4+1]*0.587+obs[i*4+2]*0.114)/255;
+      const cg=(cand[i*4]*0.299+cand[i*4+1]*0.587+cand[i*4+2]*0.114)/255;err+=Math.abs(og-cg);n++;}}
+  return n?1-err/n:0;}
+
+function paint(buf,ctx){const img=ctx.createImageData(RES,RES);img.data.set(buf);
+  // composite over dark bg so transparent areas read as background
+  for(let i=0;i<RES*RES;i++){const a=img.data[i*4+3]/255;
+    img.data[i*4]  =img.data[i*4]  *a+10*(1-a);
+    img.data[i*4+1]=img.data[i*4+1]*a+10*(1-a);
+    img.data[i*4+2]=img.data[i*4+2]*a+11*(1-a);img.data[i*4+3]=255;}
+  ctx.putImageData(img,0,0);}
+function draw(buf,cid){paint(buf,document.getElementById(cid).getContext('2d'));}
+
+// Re-apply blur and occlusion to the observation already on the table. The pose
+// and the blob layout do not move, so a slider drag changes one thing only.
+function redegrade(){
+  const t=R.truth;
+  const clean=render(t.obj,t.yaw,t.pitch,0.05,0.45,FBO);
+  R.obs=degrade(clean,RES,R.blur,R.occ,t.blobs);
+  draw(R.obs,'obsC');
+}
+
+function newObservation(){
+  const obj=Math.random()*OBJECTS.length|0;
+  const yaw=Math.random()*Math.PI*2, pitch=-0.15+Math.random()*0.5;
+  R.truth={obj,yaw,pitch,blobs:makeBlobs(RES)};
+  redegrade();
+  document.getElementById('matchC').getContext('2d').clearRect(0,0,RES,RES);
+  setBudget(0);
+  document.getElementById('results').innerHTML='<div class="empty">Observation ready. Press <b>Recognize</b>.</div>';
+}
+
+// Coarse pose grid searched per object. The three demos deliberately differ
+// here (16 yaws vs 36 on the homepage and 40 in the codebook lab): this one
+// re-renders every candidate on every query, so a coarser grid buys the
+// interactive sweep. The codebook labs render once up front and can afford more.
+const YAWN=16, PITCHES=[-0.1,0.35];
+const POSES=YAWN*PITCHES.length, BUDGET=OBJECTS.length*POSES;
+function setBudget(done){
+  document.getElementById('budget').innerHTML=
+    `${OBJECTS.length} shapes &times; ${POSES} poses = <b>${BUDGET}</b> renders` +
+    (done>0?` &middot; searched <b>${done}</b>`:'');
+}
+
+// The five candidates, drawn once so the search space is visible before the
+// recognizer answers rather than after.
+let candsDrawn=false;
+function drawCandidates(){
+  if(candsDrawn)return;
+  const strip=document.getElementById('candStrip');
+  strip.innerHTML='';
+  OBJECTS.forEach(o=>{
+    const wrap=document.createElement('div');wrap.className='c';
+    const c=document.createElement('canvas');c.width=c.height=RES;
+    const lab=document.createElement('div');lab.className='cl';lab.textContent=o.name;
+    wrap.appendChild(c);wrap.appendChild(lab);strip.appendChild(wrap);
+    paint(render(o.id,0.6,0.2,0.05,0.45,FBO),c.getContext('2d'));
+  });
+  candsDrawn=true;
+}
+
+function recognize(){
+  if(!R.obs)newObservation();
+  const cands=[];
+  for(const o of OBJECTS)for(let i=0;i<YAWN;i++)for(const pt of PITCHES)
+    cands.push({obj:o.id,yaw:i/YAWN*Math.PI*2,pitch:pt});
+  const best={}; OBJECTS.forEach(o=>best[o.id]={s:-1,yaw:0,pitch:0});
+  let overall={s:-1,obj:0,yaw:0,pitch:0}, idx=0;
+  setBusy(true);
+  const bar=document.getElementById('progBar');
+  function step(){
+    for(let n=0;n<10&&idx<cands.length;n++,idx++){const c=cands[idx];
+      const buf=render(c.obj,c.yaw,c.pitch,0.05,0.45,FBO);
+      const s=score(R.obs,buf,RES);
+      if(s>best[c.obj].s)best[c.obj]={s,yaw:c.yaw,pitch:c.pitch};
+      if(s>overall.s){overall={s,obj:c.obj,yaw:c.yaw,pitch:c.pitch};
+        draw(render(c.obj,c.yaw,c.pitch,0.05,0.45,FBO),'matchC');}}
+    bar.style.width=(idx/cands.length*100)+'%';
+    setBudget(idx);
+    if(idx<cands.length)requestAnimationFrame(step); else finish(best,overall);
+  }
+  requestAnimationFrame(step);
+}
+
+function angErr(a,b){let d=Math.abs(a-b)%(Math.PI*2);if(d>Math.PI)d=Math.PI*2-d;return d*180/Math.PI;}
+function finish(best,overall){
+  setBusy(false);document.getElementById('progBar').style.width='0';
+  draw(render(overall.obj,overall.yaw,overall.pitch,0.05,0.45,FBO),'matchC');
+  const correct = overall.obj===R.truth.obj;
+  const yawE = Math.round(angErr(overall.yaw,R.truth.yaw));
+  const ranked=OBJECTS.map(o=>({name:o.name,s:best[o.id].s})).sort((a,b)=>b.s-a.s);
+  const trueName=OBJECTS[R.truth.obj].name;
+  let html=`<div class="verdict">Guess: <b style="color:${correct?'var(--good)':'var(--bad)'}">${OBJECTS[overall.obj].name}</b> ${correct?'✓':'✗'}</div>`;
+  html+=`<div class="meta">Truth: ${trueName} &middot; match score ${overall.s.toFixed(2)}`;
+  html+= R.truth.obj===0 ? ` &middot; pose ambiguous (sphere)` : ` &middot; yaw error ≈ ${yawE}°`;
+  html+=`</div><div class="rank">`;
+  const max=ranked[0].s;
+  ranked.forEach(r=>{html+=`<div class="r"><div class="name">${r.name}</div><div class="bar"><div style="width:${Math.max(0,r.s/max*100)}%"></div></div><div class="sc">${r.s.toFixed(2)}</div></div>`;});
+  html+=`</div>`;
+  document.getElementById('results').innerHTML=html;
+}
+function setBusy(b){document.getElementById('run').disabled=b;document.getElementById('newObs').disabled=b;
+  document.getElementById('run').textContent=b?'Recognizing…':'Recognize';}
+document.getElementById('newObs').onclick=()=>newObservation();
+document.getElementById('run').onclick=recognize;
+
+// ---------- tab switching ----------
+const NOTES={
+  sculpt:'The five candidates the recognizer will search over.',
+  rec:'A hidden one of them, degraded. Found by re-rendering all five.'
+};
+function tab(sculpt){sculptOn=sculpt;
+  document.getElementById('viewSculpt').classList.toggle('on',sculpt);
+  document.getElementById('viewRec').classList.toggle('on',!sculpt);
+  document.getElementById('tabSculpt').classList.toggle('on',sculpt);
+  document.getElementById('tabRec').classList.toggle('on',!sculpt);
+  document.getElementById('tabNote').textContent=sculpt?NOTES.sculpt:NOTES.rec;
+  if(sculpt){resize();}
+  else{
+    // Never land on two blank canvases: draw the search space and make an
+    // observation on the first visit.
+    drawCandidates();
+    if(!R.obs)newObservation();
+  }
+}
+document.getElementById('tabSculpt').onclick=()=>tab(true);
+document.getElementById('tabRec').onclick=()=>tab(false);
+tab(true);
+</script>

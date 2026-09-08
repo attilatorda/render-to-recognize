@@ -1,0 +1,381 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="description" content="A sphere drawn with zero triangles. The surface is a signed distance function, ray-marched per pixel, with supersampled edges and procedural detail that keeps resolving as you zoom in.">
+<title>Vertexless renderer: an SDF sculpt demo</title>
+<style>
+  :root{
+    --ink:#e9e4d8;         /* warm off-white text */
+    --dim:#8a8578;         /* muted label */
+    --line:#2a2a24;        /* hairline */
+    --panel:rgba(14,14,12,.72);
+    --accent:#7fd1c8;      /* teal */
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:#0a0a09;color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,-apple-system,sans-serif;overflow:hidden;
+    -webkit-font-smoothing:antialiased}
+  #gl{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+  #gl:active{cursor:grabbing}
+
+  .home{position:fixed;top:14px;left:16px;z-index:20;font-size:12px;color:var(--dim);
+    text-decoration:none;background:var(--panel);backdrop-filter:blur(12px);
+    border:1px solid var(--line);border-radius:9px;padding:7px 11px}
+  .home:hover{color:var(--accent);border-color:var(--accent)}
+
+  /* control panel */
+  .panel{position:fixed;left:16px;bottom:16px;z-index:10;
+    width:min(320px,calc(100vw - 32px));
+    background:var(--panel);backdrop-filter:blur(12px);
+    border:1px solid var(--line);border-radius:14px;padding:16px 16px 14px}
+  .title{font-size:14px;letter-spacing:.2px;margin-bottom:2px}
+  .sub{font-size:11.5px;color:var(--dim);line-height:1.5;margin-bottom:14px}
+  .row{margin:11px 0}
+  .row label{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-bottom:5px}
+  .row label b{color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums}
+  input[type=range]{width:100%;height:20px;-webkit-appearance:none;background:transparent}
+  input[type=range]::-webkit-slider-runnable-track{height:2px;background:var(--line);border-radius:2px}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;margin-top:-6px;
+    border-radius:50%;background:var(--accent);cursor:pointer}
+  input[type=range]::-moz-range-track{height:2px;background:var(--line);border-radius:2px}
+  input[type=range]::-moz-range-thumb{width:14px;height:14px;border:none;border-radius:50%;background:var(--accent);cursor:pointer}
+
+  .modes{display:flex;gap:6px;margin-top:6px}
+  .modes button{flex:1;font:inherit;font-size:11.5px;color:var(--dim);
+    background:transparent;border:1px solid var(--line);border-radius:8px;padding:7px 4px;cursor:pointer}
+  .modes button.on{color:#0a0a09;background:var(--accent);border-color:var(--accent)}
+  .aarow{display:flex;align-items:center;gap:8px;margin-top:10px}
+  .aarow .lbl{font-size:12px;color:var(--dim);white-space:nowrap}
+  .aarow .modes{margin-top:0;flex:1}
+  .fps{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;width:52px;text-align:right}
+  .hint{font-size:11px;color:var(--dim);margin-top:12px;line-height:1.5}
+  .hint span{color:var(--accent)}
+  .spin{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:12px;color:var(--dim);cursor:pointer;user-select:none}
+  .spin input{accent-color:var(--accent)}
+</style>
+
+<canvas id="gl"></canvas>
+<a class="home" href="index.html">&larr; Render to Recognize</a>
+
+<div class="panel">
+  <div class="title">Vertexless renderer</div>
+  <div class="sub">One sphere, zero triangles. The whole surface is an equation, so zooming in adds detail instead of blurring it. Scroll or pinch to magnify.</div>
+
+  <div class="row">
+    <label>Zoom (magnification) <b id="vZoom"></b></label>
+    <input id="zoom" type="range" min="0" max="6" step="0.005" value="0">
+  </div>
+  <div class="row">
+    <label>Sculpt detail (noise displacement) <b id="vDetail"></b></label>
+    <input id="detail" type="range" min="0" max="0.35" step="0.005" value="0.12">
+  </div>
+  <div class="row">
+    <label>Spots (procedural texture) <b id="vSpots"></b></label>
+    <input id="spots" type="range" min="0" max="1" step="0.01" value="0.6">
+  </div>
+  <div class="row">
+    <label>Blend second blob (smooth union) <b id="vBlend"></b></label>
+    <input id="blend" type="range" min="0" max="1" step="0.01" value="0">
+  </div>
+
+  <div class="modes" id="modeBtns">
+    <button data-mode="0" class="on">Shaded</button>
+    <button data-mode="1">Normals</button>
+    <button data-mode="2">Depth</button>
+  </div>
+
+  <div class="aarow">
+    <span class="lbl">Edges</span>
+    <div class="modes" id="aaBtns">
+      <button data-aa="1">Off</button>
+      <button data-aa="2" class="on">2&times;2</button>
+      <button data-aa="3">3&times;3</button>
+    </div>
+    <span class="fps" id="fps">&nbsp;</span>
+  </div>
+
+  <label class="spin"><input id="spin" type="checkbox" checked> auto-rotate &middot; drag to orbit</label>
+
+  <div class="hint"><span>Normals &amp; Depth</span> are the exact G-buffer channels you would feed a recognition net, free from this renderer.</div>
+</div>
+
+<script>
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl');
+
+const VERT = `
+attribute vec2 aPos;
+void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }`;
+
+const FRAG = `
+precision highp float;
+uniform vec2  uRes;
+uniform float uDist;    // camera distance (fixed; zoom is focal, not dolly)
+uniform float uZoom;    // magnification, 1x to 64x
+uniform float uYaw;     // orbit
+uniform float uPitch;
+uniform float uDetail;  // surface displacement amount
+uniform float uSpots;   // procedural spot texture
+uniform float uBlend;   // second blob smooth-union amount
+uniform float uRelax;   // sphere-trace step relaxation
+uniform int   uMode;    // 0 shaded | 1 normals | 2 depth
+uniform int   uAA;      // 1 = off, 2 = 2x2, 3 = 3x3
+uniform int   uOct;     // fBm octaves, chosen to match the pixel footprint
+
+// Procedural noise. Detail is an equation rather than texels, so octaves can
+// be added as you zoom in instead of running out of resolution.
+float hash(vec3 p){
+  p = fract(p*0.3183099 + 0.1); p *= 17.0;
+  return fract(p.x*p.y*p.z*(p.x+p.y+p.z));
+}
+float noise(vec3 x){
+  vec3 i = floor(x), f = fract(x);
+  f = f*f*(3.0-2.0*f);
+  return mix(mix(mix(hash(i+vec3(0,0,0)),hash(i+vec3(1,0,0)),f.x),
+                 mix(hash(i+vec3(0,1,0)),hash(i+vec3(1,1,0)),f.x),f.y),
+             mix(mix(hash(i+vec3(0,0,1)),hash(i+vec3(1,0,1)),f.x),
+                 mix(hash(i+vec3(0,1,1)),hash(i+vec3(1,1,1)),f.x),f.y),f.z);
+}
+// Level of detail: uOct rises with magnification so the finest octave stays
+// about one pixel wide. Amplitude halves as frequency doubles, so the added
+// octaves keep the slope of the surface already on screen.
+float fbm(vec3 p){
+  float v=0.0, a=0.5;
+  for(int i=0;i<12;i++){ if(i>=uOct) break; v += a*noise(p); p *= 2.02; a *= 0.5; }
+  return v;
+}
+
+// Smooth union: the sculpting primitive. Blends shapes like clay.
+float smin(float a, float b, float k){
+  float h = clamp(0.5 + 0.5*(b-a)/k, 0.0, 1.0);
+  return mix(b, a, h) - k*h*(1.0-h);
+}
+
+// ---- THE SCENE ----  (edit here to "sculpt")
+float map(vec3 p){
+  float sphere = length(p) - 1.0;
+  sphere -= fbm(p*4.0) * uDetail;              // carve procedural detail into the surface
+  vec3 q = p - vec3(0.95, 0.35, 0.0);
+  float blob = length(q) - 0.62*uBlend;        // grows in as you raise Blend
+  return smin(sphere, blob, 0.35);             // fuse them smoothly
+}
+
+// The epsilon tracks the pixel footprint. A constant one would average away
+// exactly the detail the extra octaves just added.
+vec3 calcNormal(vec3 p, float fp){
+  float h = max(0.35*fp, 1e-6);
+  vec2 e = vec2(h, 0.0);
+  return normalize(vec3(
+    map(p+e.xyy)-map(p-e.xyy),
+    map(p+e.yxy)-map(p-e.yxy),
+    map(p+e.yyx)-map(p-e.yyx)));
+}
+
+mat3 orbit(float yaw, float pitch){
+  float cy=cos(yaw), sy=sin(yaw), cp=cos(pitch), sp=sin(pitch);
+  return mat3(cy,0.0,-sy, sy*sp,cp,cy*sp, sy*cp,-sp,cy*cp);
+}
+
+vec3 shade(vec2 uv){
+  // Orbit camera: one ray per pixel, no geometry uploaded.
+  mat3 rot = orbit(uYaw, uPitch);
+  vec3 ro = rot * vec3(0.0, 0.0, uDist);
+  vec3 ww = normalize(-ro);
+  vec3 uu = normalize(cross(ww, rot*vec3(0,1,0)));
+  vec3 vv = cross(uu, ww);
+  // Focal zoom: magnify by narrowing the ray fan. The camera never moves, so
+  // it can never end up inside the surface.
+  vec3 rd = normalize(uv.x*uu + uv.y*vv + 1.6*uZoom*ww);
+
+  // World units covered by one pixel, per unit of ray distance.
+  float px = 1.0/(1.6*uZoom*uRes.y);
+
+  // Sphere-trace: step by the distance field itself.
+  float t = 0.0, tmax = uDist + 3.0;
+  bool hit = false;
+  for(int i=0;i<192;i++){
+    vec3 p = ro + rd*t;
+    float d = map(p);
+    if(d < max(0.5*px*t, 1e-7)){ hit = true; break; }  // stop under half a pixel
+    t += d*uRelax;
+    if(t > tmax) break;
+  }
+
+  vec3 col = vec3(0.035,0.04,0.045);           // background
+  if(hit){
+    float fp = px*t;                            // pixel footprint at the hit
+    vec3 p = ro + rd*t;
+    vec3 n = calcNormal(p, fp);
+    if(uMode==1){
+      col = n*0.5 + 0.5;                        // G-buffer: surface normals
+    } else if(uMode==2){
+      float depth = clamp((t-(uDist-1.4))/2.8, 0.0, 1.0);
+      col = vec3(1.0-depth);                    // G-buffer: depth
+    } else {
+      vec3 L = normalize(vec3(0.7,0.85,0.5));
+      float diff = clamp(dot(n,L),0.0,1.0);
+      float spec = pow(clamp(dot(reflect(-L,n), -rd),0.0,1.0), 28.0);
+      // Shading thresholds narrow with magnification. A fixed-width band
+      // spreads across thousands of pixels when zoomed in and reads as blur.
+      float w = 0.04/uZoom;
+      float spots = smoothstep(0.56-w, 0.56+w, noise(p*6.0)) * uSpots;
+      vec3 base = mix(vec3(0.86,0.5,0.32), vec3(0.12,0.14,0.22), spots);
+      col = base*(0.16 + 0.9*diff) + spec*0.35;
+      col += (fbm(p*48.0)-0.5)*0.07;            // micro "dust", also procedural
+    }
+  }
+  return col;
+}
+
+void main(){
+  float n = float(uAA);
+  vec3 acc = vec3(0.0);
+  for(int i=0;i<9;i++){
+    if(i >= uAA*uAA) break;
+    float fi = float(i);
+    vec2 g = (vec2(mod(fi,n), floor(fi/n)) + 0.5)/n - 0.5;   // grid offset in pixels
+    g = mat2(0.894,-0.447, 0.447,0.894) * g;                 // rotated grid, kinder to near-axis edges
+    acc += shade((gl_FragCoord.xy + g - 0.5*uRes)/uRes.y);
+  }
+  acc /= float(uAA*uAA);
+  // Gamma applies once, after averaging. Averaging gamma-encoded samples
+  // makes edges read too bright.
+  gl_FragColor = vec4(pow(acc, vec3(0.4545)), 1.0);
+}`;
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+gl.linkProgram(prog); gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'aPos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const U = n => gl.getUniformLocation(prog, n);
+const uRes=U('uRes'), uDist=U('uDist'), uZoom=U('uZoom'), uYaw=U('uYaw'), uPitch=U('uPitch'),
+      uDetail=U('uDetail'), uSpots=U('uSpots'), uBlend=U('uBlend'), uRelax=U('uRelax'),
+      uMode=U('uMode'), uAA=U('uAA'), uOct=U('uOct');
+
+// --- state + controls ---
+const S = {dist:3.0, zoom:1, detail:0.12, spots:0.6, blend:0, mode:0, aa:2,
+           yaw:0.5, pitch:-0.25, spin:true, oct:6, relax:0.85};
+const bind = (id, key, label, out) => {
+  const el = document.getElementById(id), o = document.getElementById(out);
+  const upd = () => { S[key]=parseFloat(el.value); o.textContent=label(S[key]); };
+  el.addEventListener('input', upd); upd();
+};
+bind('detail','detail',v=>v.toFixed(3),'vDetail');
+bind('spots','spots',v=>v.toFixed(2),'vSpots');
+bind('blend','blend',v=>v.toFixed(2),'vBlend');
+
+// Zoom is logarithmic: the slider carries log2(magnification).
+const zoomEl = document.getElementById('zoom'), vZoom = document.getElementById('vZoom');
+function setZoom(z){
+  S.zoom = Math.max(1, Math.min(64, z));
+  zoomEl.value = Math.log2(S.zoom);
+  vZoom.textContent = (S.zoom < 10 ? S.zoom.toFixed(2) : S.zoom.toFixed(1)) + '×';
+}
+zoomEl.addEventListener('input', () => setZoom(Math.pow(2, parseFloat(zoomEl.value))));
+setZoom(1);
+
+function pickGroup(sel, apply){
+  document.querySelectorAll(sel + ' button').forEach(b => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll(sel + ' button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on'); apply(b);
+    });
+  });
+}
+pickGroup('#modeBtns', b => S.mode = parseInt(b.dataset.mode));
+pickGroup('#aaBtns',   b => { S.aa = parseInt(b.dataset.aa); resize(); });
+const spinBox = document.getElementById('spin');
+spinBox.addEventListener('change', e => S.spin = e.target.checked);
+
+// Drag to orbit, two fingers to pinch-zoom.
+const ptrs = new Map();
+let drag = false, pinch = 0;
+const clampPitch = v => Math.max(-1.4, Math.min(1.4, v));
+function pinchDist(){
+  const a = [...ptrs.values()];
+  return Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
+}
+canvas.addEventListener('pointerdown', e => {
+  ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
+  if(ptrs.size === 1){ drag = true; S.spin = false; spinBox.checked = false; }
+  else if(ptrs.size === 2){ drag = false; pinch = pinchDist(); }
+});
+addEventListener('pointermove', e => {
+  const p = ptrs.get(e.pointerId); if(!p) return;
+  const px = p.x, py = p.y; p.x = e.clientX; p.y = e.clientY;
+  if(ptrs.size === 2){
+    const d = pinchDist();
+    if(pinch > 0) setZoom(S.zoom * d/pinch);
+    pinch = d;
+  } else if(drag){
+    S.yaw -= (e.clientX - px)*0.008;
+    S.pitch = clampPitch(S.pitch + (e.clientY - py)*0.008);
+  }
+});
+const lift = e => { ptrs.delete(e.pointerId); if(ptrs.size < 2) pinch = 0; if(ptrs.size === 0) drag = false; };
+addEventListener('pointerup', lift);
+addEventListener('pointercancel', lift);
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  setZoom(S.zoom * Math.exp(-e.deltaY * 0.0015));
+}, {passive:false});
+
+function resize(){
+  // Supersampling already costs uAA^2 marches per pixel, so give back some DPR.
+  const dpr = Math.min(devicePixelRatio||1, S.aa > 1 ? 1.5 : 1.75);
+  canvas.width = innerWidth*dpr; canvas.height = innerHeight*dpr;
+}
+addEventListener('resize', resize); resize();
+
+const fpsEl = document.getElementById('fps');
+let fpsAcc = 0, fpsN = 0, fpsLast = performance.now();
+
+function frame(){
+  if(S.spin) S.yaw += 0.004;
+
+  // World units per pixel at the surface, and the octave count that matches it.
+  const pxWorld = (S.dist - 1.0) / (1.6 * S.zoom * canvas.height);
+  S.oct = Math.max(4, Math.min(12, Math.ceil(Math.log2(1/(8*pxWorld)) / Math.log2(2.02))));
+  // More octaves means a worse Lipschitz bound on map(), so relax the step.
+  // Overshoot shows up as dark speckles at max detail and max zoom.
+  const deep = Math.min(1, Math.max(0, (S.oct - 4)/8));
+  const carve = Math.min(1, S.detail/0.12);
+  S.relax = 0.85 - 0.25*deep*carve;
+
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.uniform2f(uRes, canvas.width, canvas.height);
+  gl.uniform1f(uDist, S.dist);
+  gl.uniform1f(uZoom, S.zoom);
+  gl.uniform1f(uYaw, S.yaw);
+  gl.uniform1f(uPitch, S.pitch);
+  gl.uniform1f(uDetail, S.detail);
+  gl.uniform1f(uSpots, S.spots);
+  gl.uniform1f(uBlend, S.blend);
+  gl.uniform1f(uRelax, S.relax);
+  gl.uniform1i(uMode, S.mode);
+  gl.uniform1i(uAA, S.aa);
+  gl.uniform1i(uOct, S.oct);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  const now = performance.now();
+  fpsAcc += now - fpsLast; fpsLast = now; fpsN++;
+  if(fpsN >= 20){ fpsEl.textContent = Math.round(1000/(fpsAcc/fpsN)) + ' fps'; fpsAcc = 0; fpsN = 0; }
+
+  requestAnimationFrame(frame);
+}
+frame();
+</script>

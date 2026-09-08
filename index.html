@@ -1,0 +1,189 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="A 3D vision pipeline with no meshes and no training loop. Objects are drawn as signed-distance-field equations, then recognized by rendering candidates and keeping the closest match. Raw WebGL, zero dependencies, three live demos.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Render to Recognize: an SDF vision pipeline">
+<meta property="og:url" content="https://attilatorda.github.io/render-to-recognize/">
+<meta name="author" content="Attila Torda">
+<meta property="og:description" content="Draw without vertices, recognize by re-drawing, then make it fast with a codebook. Three live WebGL demos, all client-side.">
+<title>Render to Recognize: an SDF vision pipeline</title>
+<style>
+  :root{--ink:#e9e4d8;--dim:#8a8578;--faint:#5f5b52;--line:#2a2a24;
+    --panel:#121210;--accent:#7fd1c8;--bg:#0a0a09}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--ink);line-height:1.6;
+    font-family:"IBM Plex Sans",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:640px;margin:0 auto;padding:0 20px}
+  a{color:var(--accent);text-decoration:none}
+
+  /* hero */
+  .hero{padding:30px 0 22px}
+  #hero{width:100%;height:260px;display:block;border-radius:16px;background:#0c0c0b;border:1px solid var(--line)}
+  .thesis{margin-top:22px}
+  .kicker{font-size:12.5px;color:var(--accent);margin-bottom:9px}
+  h1{font-size:29px;line-height:1.12;font-weight:600;letter-spacing:-.4px;margin-bottom:14px}
+  .lede{font-size:15px;color:var(--dim);max-width:52ch}
+  .lede b{color:var(--ink);font-weight:500}
+
+  section{padding:34px 0;border-top:1px solid var(--line)}
+  h2{font-size:19px;font-weight:600;margin-bottom:14px;letter-spacing:-.2px}
+  p{font-size:14px;color:var(--dim);margin-bottom:13px}
+  p b{color:var(--ink);font-weight:500}
+  .chain{font-size:14px;color:var(--dim)}
+  .chain .s{color:var(--ink)}
+
+  /* demo cards */
+  .demos{display:flex;flex-direction:column;gap:12px;margin-top:6px}
+  .demo{display:block;background:var(--panel);border:1px solid var(--line);border-radius:13px;
+    padding:17px 18px;transition:border-color .15s,transform .15s}
+  .demo:hover{border-color:var(--accent);transform:translateY(-1px)}
+  .demo .n{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums;margin-bottom:5px}
+  .demo .t{font-size:16px;color:var(--ink);font-weight:600;margin-bottom:6px}
+  .demo .d{font-size:13px;color:var(--dim);margin-bottom:10px}
+  .demo .go{font-size:13px;color:var(--accent);font-weight:500}
+
+  .stack{display:flex;flex-wrap:wrap;gap:7px;margin-top:6px}
+  .stack span{font-size:12px;color:var(--dim);background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:5px 10px}
+
+  footer{padding:30px 0 46px;border-top:1px solid var(--line);font-size:12.5px;color:var(--faint)}
+  footer a{color:var(--dim)}
+  @media(max-width:480px){h1{font-size:24px}}
+</style>
+
+<div class="wrap">
+
+  <div class="hero">
+    <canvas id="hero"></canvas>
+    <div class="thesis">
+      <div class="kicker">Computer graphics · computer vision · from scratch</div>
+      <h1>Render to recognize</h1>
+      <p class="lede">A vision pipeline with <b>no meshes and no training loop</b>. Objects are drawn as pure distance-field equations, then recognized by rendering candidates and keeping the one that matches. Cryo-EM reads a molecule's orientation from a noisy image the same way. Built in raw WebGL, running live below.</p>
+    </div>
+  </div>
+
+  <section>
+    <h2>How it works</h2>
+    <p>Everything follows from the first step.</p>
+    <p class="chain"><span class="s">Draw without vertices.</span> A sphere is one short equation instead of a few thousand triangles, so it stays sharp however far you zoom in. <span class="s">Recognize by re-drawing.</span> To identify a hidden object, draw every candidate at every angle and keep whichever drawing matches. <span class="s">Make it fast.</span> Draw those candidates once, store each view as a short list of numbers, and recognition becomes a table lookup &mdash; which is how single-particle microscopy reads orientations off a noisy image.</p>
+  </section>
+
+  <section>
+    <h2>Live demos</h2>
+    <div class="demos">
+      <a class="demo" href="sdf-sculpt-demo.html">
+        <div class="n">01</div>
+        <div class="t">Vertexless renderer</div>
+        <div class="d">One surface, zero triangles. Orbit it, carve procedural detail into it, fuse a second blob with a smooth union, and read off normals and depth as free G-buffer channels. Scroll to magnify up to 64&times;: because the surface is an equation, new detail keeps appearing instead of blurring.</div>
+        <div class="go">Open demo</div>
+      </a>
+      <a class="demo" href="sdf-recognition-lab.html">
+        <div class="n">02</div>
+        <div class="t">Recognition lab</div>
+        <div class="d">Analysis by synthesis. A hidden object at a hidden pose is blurred and occluded; the lab renders every candidate across a pose grid and reports the best match, its orientation, and a confidence ranking.</div>
+        <div class="go">Open demo</div>
+      </a>
+      <a class="demo" href="micrograph-codebook-lab.html">
+        <div class="n">03</div>
+        <div class="t">Micrograph codebook</div>
+        <div class="d">The cryo-EM trick. Build a de-duplicated codebook of view embeddings once (symmetric shapes compress hard), then identify noisy images by nearest-neighbor lookup with zero rendering at query time.</div>
+        <div class="go">Open demo</div>
+      </a>
+    </div>
+  </section>
+
+  <section>
+    <h2>Methods</h2>
+    <p>None of these techniques is new. The work is in building them end to end and making them run in a browser.</p>
+    <p>The renderer marches <a href="https://en.wikipedia.org/wiki/Signed_distance_function">signed distance functions</a> by <a href="https://en.wikipedia.org/wiki/Ray_marching">sphere tracing</a>, carves surfaces with <a href="https://en.wikipedia.org/wiki/Fractional_Brownian_motion">fractional Brownian motion</a>, and bores the holed cube with a <a href="https://en.wikipedia.org/wiki/Constructive_solid_geometry">constructive solid geometry</a> subtract. Edges are supersampled (<a href="https://en.wikipedia.org/wiki/Supersampling">supersampling</a>, <a href="https://en.wikipedia.org/wiki/Spatial_anti-aliasing">spatial anti-aliasing</a>) and octave count follows a <a href="https://en.wikipedia.org/wiki/Level_of_detail_(computer_graphics)">level-of-detail</a> rule as you zoom.</p>
+    <p>Recognition is render-and-compare: <a href="https://en.wikipedia.org/wiki/Template_matching">template matching</a> against rendered candidates, which recovers identity and <a href="https://en.wikipedia.org/wiki/3D_pose_estimation">3D pose</a> together. The codebook turns that search into <a href="https://en.wikipedia.org/wiki/Nearest_neighbor_search">nearest neighbor search</a> over a de-duplicated dictionary, the same compression idea as <a href="https://en.wikipedia.org/wiki/Vector_quantization">vector quantization</a>. The microscopy framing is real: projection matching is how <a href="https://en.wikipedia.org/wiki/Single_particle_analysis">single particle analysis</a> in <a href="https://en.wikipedia.org/wiki/Cryogenic_electron_microscopy">cryo-EM</a> assigns particle orientations. The method needs a shape it can draw, so it covers rigid objects with a known geometry and not things that differ from one sample to the next — cells on a pathology slide have no fixed template to render against.</p>
+  </section>
+
+  <section>
+    <h2>Built with</h2>
+    <p>Each demo is a single HTML file with its JavaScript and shader source inline. Open one in a browser and it runs; open it in an editor and there is nothing else to find.</p>
+    <div class="stack"><span>Raw WebGL / GLSL</span><span>SDF ray marching</span><span>Vanilla JS</span><span>Canvas 2D</span><span>Zero dependencies</span></div>
+  </section>
+
+  <footer>
+    Built by Attila Torda · <a href="https://github.com/attilatorda/render-to-recognize">source on GitHub</a><br>
+    Three demos + this page run entirely client-side. Host the four files in one folder and the links above resolve.
+  </footer>
+</div>
+
+<script>
+// ---------- hero WebGL engine (SDF bio shapes) ----------
+const heroCanvas=document.getElementById('hero');
+const gl=heroCanvas.getContext('webgl',{alpha:false});
+
+const VERT=`attribute vec2 aPos;void main(){gl_Position=vec4(aPos,0.0,1.0);}`;
+const FRAG=`
+precision highp float;
+uniform vec2 uRes;uniform float uYaw,uPitch,uDist;uniform int uObj;
+uniform int uAA;   // 1 = off, 2 = 2x2 rotated-grid supersampling
+float smin(float a,float b,float k){float h=clamp(0.5+0.5*(b-a)/k,0.0,1.0);return mix(b,a,h)-k*h*(1.0-h);}
+float sdCap(vec3 p,vec3 a,vec3 b,float r){vec3 pa=p-a,ba=b-a;float h=clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0);return length(pa-ba*h)-r;}
+float sdTorus(vec3 p,vec2 t){vec2 q=vec2(length(p.xz)-t.x,p.y);return length(q)-t.y;}
+float glob(vec3 p){float d=length(p-vec3(0.35,0.1,0.0))-0.55;
+  d=smin(d,length(p-vec3(-0.3,0.25,0.15))-0.5,0.35);d=smin(d,length(p-vec3(0.05,-0.4,-0.2))-0.48,0.35);
+  d=smin(d,length(p-vec3(-0.15,-0.1,0.4))-0.42,0.35);d=smin(d,length(p-vec3(0.28,0.42,-0.3))-0.4,0.35);return d;}
+float helix(vec3 p){float d=1e5;for(int i=0;i<14;i++){float t=float(i)/13.0;float a=t*6.2831*1.6;
+  d=smin(d,length(p-vec3(cos(a)*0.5,(t-0.5)*1.7,sin(a)*0.5))-0.2,0.15);}return d;}
+float mapObj(vec3 p){if(uObj==0)return glob(p);if(uObj==1)return helix(p);
+  if(uObj==2)return sdCap(p,vec3(0.0,-1.0,-0.08),vec3(0.0,1.0,0.08),0.25);return sdTorus(p,vec2(0.72,0.3));}
+vec3 nrm(vec3 p){vec2 e=vec2(0.0008,0.0);return normalize(vec3(
+  mapObj(p+e.xyy)-mapObj(p-e.xyy),mapObj(p+e.yxy)-mapObj(p-e.yxy),mapObj(p+e.yyx)-mapObj(p-e.yyx)));}
+mat3 orbit(float y,float pt){float cy=cos(y),sy=sin(y),cp=cos(pt),sp=sin(pt);
+  return mat3(cy,0.0,-sy,sy*sp,cp,cy*sp,sy*cp,-sp,cy*cp);}
+// Pre-gamma color for one sample. The background is the linear form of the
+// page colour (0.039,0.039,0.035), so it survives the gamma at the end.
+vec3 shade(vec2 uv){
+  mat3 R=orbit(uYaw,uPitch);vec3 ro=R*vec3(0.0,0.0,uDist);
+  vec3 ww=normalize(-ro),uu=normalize(cross(ww,R*vec3(0,1,0))),vv=cross(uu,ww);
+  vec3 rd=normalize(uv.x*uu+uv.y*vv+1.7*ww);
+  float t=0.0,tmax=uDist+3.0;bool hit=false;
+  for(int i=0;i<120;i++){vec3 p=ro+rd*t;float d=mapObj(p);if(d<0.001*t){hit=true;break;}t+=d*0.85;if(t>tmax)break;}
+  if(!hit)return vec3(0.000794,0.000794,0.000627);
+  vec3 p=ro+rd*t,n=nrm(p);
+  float diff=clamp(dot(n,normalize(vec3(0.6,0.85,0.5))),0.0,1.0);
+  float rim=pow(1.0-clamp(dot(n,-rd),0.0,1.0),2.0);
+  return vec3(0.5,0.78,0.86)*(0.18+0.85*diff)+vec3(0.5,0.82,0.78)*rim*0.5;
+}
+void main(){
+  float n=float(uAA);
+  vec3 acc=vec3(0.0);
+  for(int i=0;i<9;i++){
+    if(i>=uAA*uAA)break;
+    float fi=float(i);
+    vec2 g=(vec2(mod(fi,n),floor(fi/n))+0.5)/n-0.5;   // grid offset in pixels
+    g=mat2(0.894,-0.447, 0.447,0.894)*g;              // rotated grid
+    acc+=shade((gl_FragCoord.xy+g-0.5*uRes)/uRes.y);
+  }
+  acc/=float(uAA*uAA);
+  gl_FragColor=vec4(pow(acc,vec3(0.4545)),1.0);       // gamma once, after averaging
+}`;
+function sh(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
+  if(!gl.getShaderParameter(o,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(o);return o;}
+const prog=gl.createProgram();gl.attachShader(prog,sh(gl.VERTEX_SHADER,VERT));gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FRAG));
+gl.linkProgram(prog);gl.useProgram(prog);
+const vb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vb);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+const aPos=gl.getAttribLocation(prog,'aPos');gl.enableVertexAttribArray(aPos);gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+const U=n=>gl.getUniformLocation(prog,n),u={res:U('uRes'),yaw:U('uYaw'),pitch:U('uPitch'),dist:U('uDist'),obj:U('uObj'),aa:U('uAA')};
+
+// ---------- hero animation ----------
+function sizeHero(){const dpr=Math.min(devicePixelRatio||1,1.5);   // 2x2 AA already costs 4 marches per pixel
+  heroCanvas.width=heroCanvas.clientWidth*dpr;heroCanvas.height=heroCanvas.clientHeight*dpr;}
+addEventListener('resize',sizeHero);sizeHero();
+let t0=performance.now();
+function hero(){const t=(performance.now()-t0)/1000;
+  const obj=Math.floor(t/4.5)%4, yaw=t*0.5, pitch=-0.2+Math.sin(t*0.3)*0.25;
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,heroCanvas.width,heroCanvas.height);
+  gl.uniform2f(u.res,heroCanvas.width,heroCanvas.height);
+  gl.uniform1f(u.yaw,yaw);gl.uniform1f(u.pitch,pitch);gl.uniform1f(u.dist,3.6);gl.uniform1i(u.obj,obj);
+  gl.uniform1i(u.aa,2);   // 2x2 supersampling, on screen only
+  gl.clearColor(0.039,0.039,0.035,1);gl.clear(gl.COLOR_BUFFER_BIT);gl.drawArrays(gl.TRIANGLES,0,3);
+  requestAnimationFrame(hero);}
+hero();
+</script>

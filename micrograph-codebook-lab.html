@@ -1,0 +1,298 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="description" content="Projection matching the cryo-EM way: build a codebook of rendered views once, then identify a noisy micrograph by nearest-neighbor lookup, with no rendering at query time.">
+<title>Micrograph Codebook Lab: projection matching</title>
+<style>
+  :root{--ink:#e9e4d8;--dim:#8a8578;--line:#2a2a24;--panel:rgba(14,14,12,.72);--accent:#7fd1c8;--good:#8fd18a;--bad:#d18a8a}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{min-height:100%;background:#0a0a09;color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:600px;margin:0 auto;padding:26px 18px 40px}
+  h1{font-size:19px;font-weight:600;margin-bottom:4px}
+  .note{font-size:12px;color:var(--dim);line-height:1.55;margin-bottom:6px}
+  .disclaim{font-size:11px;color:var(--dim);line-height:1.5;border-left:2px solid var(--line);padding-left:10px;margin:14px 0 20px;font-style:italic}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:16px;margin-bottom:16px}
+  .card h2{font-size:13px;font-weight:600;margin-bottom:3px}
+  .card .cn{font-size:11.5px;color:var(--dim);line-height:1.5;margin-bottom:14px}
+  .step{font-size:11px;color:var(--accent);letter-spacing:.4px;margin-bottom:6px}
+  .row{margin:11px 0}
+  .row label{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-bottom:5px}
+  .row label b{color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums}
+  input[type=range]{width:100%;height:20px;-webkit-appearance:none;background:transparent}
+  input[type=range]::-webkit-slider-runnable-track{height:2px;background:var(--line);border-radius:2px}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;margin-top:-6px;border-radius:50%;background:var(--accent)}
+  input[type=range]::-moz-range-track{height:2px;background:var(--line)}
+  input[type=range]::-moz-range-thumb{width:14px;height:14px;border:none;border-radius:50%;background:var(--accent)}
+  .btns{display:flex;gap:8px;margin-top:12px}
+  .btns button{flex:1;font:inherit;font-size:13px;padding:10px;border-radius:9px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--ink)}
+  .btns button.primary{background:var(--accent);color:#0a0a09;border-color:var(--accent)}
+  .btns button:disabled{opacity:.4;cursor:default}
+  .prog{height:3px;background:var(--line);border-radius:2px;margin-top:12px;overflow:hidden}
+  .prog>div{height:100%;width:0;background:var(--accent);transition:width .05s linear}
+  .bars{margin-top:6px}
+  .bars .b{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:12px}
+  .bars .nm{width:130px;color:var(--ink)}
+  .bars .track{flex:1;height:8px;background:var(--line);border-radius:4px;overflow:hidden}
+  .bars .track>div{height:100%;background:var(--accent)}
+  .bars .ct{width:70px;text-align:right;color:var(--dim);font-variant-numeric:tabular-nums;font-size:11px}
+  .summ{font-size:12px;color:var(--dim);margin-top:12px;line-height:1.6}
+  .summ b{color:var(--ink)}
+  .gallery{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
+  .gallery canvas{width:52px;height:52px;background:#0a0a09;border-radius:6px;border:1px solid var(--line)}
+  .stage{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:4px 0 6px}
+  .cellv{text-align:center}
+  .cellv h4{font-size:10.5px;color:var(--dim);font-weight:500;margin-bottom:8px;letter-spacing:.2px}
+  .cellv canvas{width:100%;max-width:180px;aspect-ratio:1;background:#0a0a09;border-radius:8px}
+  .verdict{font-size:15px;margin:10px 0 8px}
+  .verdict b{font-weight:600}
+  .empty{color:var(--dim);font-size:12px;text-align:center;padding:14px}
+  .home{display:inline-block;font-size:12px;color:var(--dim);text-decoration:none;margin-bottom:14px}
+  .home:hover{color:var(--accent)}
+</style>
+
+<div class="wrap">
+  <a class="home" href="index.html">&larr; Render to Recognize</a>
+  <h1>Micrograph codebook lab</h1>
+  <div class="note">Projection matching, the cryo-EM way: build a codebook of rendered views once, then identify a noisy micrograph by nearest-neighbor lookup, with no rendering at query time.</div>
+  <div class="disclaim">These four structures are stylized stand-ins, not accurate molecular geometry. The demo is about the recognition pipeline, the same pattern real cryo-EM uses to assign particle orientations. It is not about modeling real proteins.</div>
+
+  <div class="card">
+    <div class="step">STEP 1 · BUILD CODEBOOK</div>
+    <h2>Novelty-based view dictionary</h2>
+    <div class="cn">Each structure is rendered at many rotations. A view is stored only if its embedding is far from every view already kept, so symmetric structures compress to a handful while asymmetric ones keep more.</div>
+    <div class="row">
+      <label>Novelty threshold <b id="vTau"></b></label>
+      <input id="tau" type="range" min="0.12" max="0.9" step="0.01" value="0.42">
+    </div>
+    <div class="btns"><button id="build" class="primary">Build codebook</button></div>
+    <div class="prog"><div id="buildBar"></div></div>
+    <div id="buildOut"></div>
+  </div>
+
+  <div class="card">
+    <div class="step">STEP 2 · IDENTIFY</div>
+    <h2>Match a noisy micrograph</h2>
+    <div class="cn">One structure is imaged at a hidden orientation, then hit with noise and occlusion. Identity + pose come from the closest codebook entry.</div>
+    <div class="stage">
+      <div class="cellv"><h4>MICROGRAPH</h4><canvas id="obsC" width="64" height="64"></canvas></div>
+      <div class="cellv"><h4>CODEBOOK MATCH</h4><canvas id="matchC" width="64" height="64"></canvas></div>
+    </div>
+    <div class="row">
+      <label>Noise <b id="vNoise"></b></label>
+      <input id="noise" type="range" min="0" max="1" step="0.01" value="0.35">
+    </div>
+    <div class="row">
+      <label>Occlusion <b id="vOcc"></b></label>
+      <input id="occ" type="range" min="0" max="1" step="0.01" value="0.2">
+    </div>
+    <div class="btns">
+      <button id="newObs">New micrograph</button>
+      <button id="run" class="primary">Identify</button>
+    </div>
+    <div id="idOut"><div class="empty">Build the codebook first.</div></div>
+  </div>
+</div>
+
+<canvas id="gl" width="8" height="8" style="display:none"></canvas>
+
+<script>
+const gl=document.getElementById('gl').getContext('webgl',{preserveDrawingBuffer:true});
+const STRUCTS=[
+  {id:0,name:'Globular protein'},
+  {id:1,name:'Helix'},
+  {id:2,name:'Filament'},
+  {id:3,name:'Capsid ring'},
+];
+
+const VERT=`attribute vec2 aPos;void main(){gl_Position=vec4(aPos,0.0,1.0);}`;
+const FRAG=`
+precision highp float;
+uniform vec2 uRes; uniform float uYaw,uPitch,uDist; uniform int uObj;
+float smin(float a,float b,float k){float h=clamp(0.5+0.5*(b-a)/k,0.0,1.0);return mix(b,a,h)-k*h*(1.0-h);}
+float sdCap(vec3 p,vec3 a,vec3 b,float r){vec3 pa=p-a,ba=b-a;float h=clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0);return length(pa-ba*h)-r;}
+float sdTorus(vec3 p,vec2 t){vec2 q=vec2(length(p.xz)-t.x,p.y);return length(q)-t.y;}
+
+float glob(vec3 p){
+  float d=length(p-vec3(0.35,0.1,0.0))-0.55;
+  d=smin(d,length(p-vec3(-0.3,0.25,0.15))-0.5,0.35);
+  d=smin(d,length(p-vec3(0.05,-0.4,-0.2))-0.48,0.35);
+  d=smin(d,length(p-vec3(-0.15,-0.1,0.4))-0.42,0.35);
+  d=smin(d,length(p-vec3(0.28,0.42,-0.3))-0.4,0.35);
+  return d;
+}
+float helix(vec3 p){
+  float d=1e5;
+  for(int i=0;i<14;i++){float t=float(i)/13.0;float a=t*6.2831*1.6;
+    d=smin(d,length(p-vec3(cos(a)*0.5,(t-0.5)*1.7,sin(a)*0.5))-0.2,0.15);}
+  return d;
+}
+float mapObj(vec3 p){
+  if(uObj==0)return glob(p);
+  if(uObj==1)return helix(p);
+  if(uObj==2)return sdCap(p,vec3(0.0,-1.0,-0.08),vec3(0.0,1.0,0.08),0.25);
+  return sdTorus(p,vec2(0.72,0.3));
+}
+vec3 nrm(vec3 p){vec2 e=vec2(0.0008,0.0);
+  return normalize(vec3(mapObj(p+e.xyy)-mapObj(p-e.xyy),mapObj(p+e.yxy)-mapObj(p-e.yxy),mapObj(p+e.yyx)-mapObj(p-e.yyx)));}
+mat3 orbit(float y,float pt){float cy=cos(y),sy=sin(y),cp=cos(pt),sp=sin(pt);
+  return mat3(cy,0.0,-sy,sy*sp,cp,cy*sp,sy*cp,-sp,cy*cp);}
+void main(){
+  vec2 uv=(gl_FragCoord.xy-0.5*uRes)/uRes.y;
+  mat3 R=orbit(uYaw,uPitch);
+  vec3 ro=R*vec3(0.0,0.0,uDist);
+  vec3 ww=normalize(-ro),uu=normalize(cross(ww,R*vec3(0,1,0))),vv=cross(uu,ww);
+  vec3 rd=normalize(uv.x*uu+uv.y*vv+1.7*ww);
+  float t=0.0,tmax=uDist+3.0;bool hit=false;
+  for(int i=0;i<120;i++){vec3 p=ro+rd*t;float d=mapObj(p);if(d<0.001*t){hit=true;break;}t+=d*0.85;if(t>tmax)break;}
+  if(!hit){gl_FragColor=vec4(0.0);return;}
+  vec3 p=ro+rd*t,n=nrm(p);
+  float diff=clamp(dot(n,normalize(vec3(0.6,0.85,0.5))),0.0,1.0);
+  vec3 col=vec3(0.55,0.78,0.9)*(0.2+0.85*diff);   // cool "stain" tone
+  gl_FragColor=vec4(pow(col,vec3(0.4545)),1.0);
+}`;
+function sh(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
+  if(!gl.getShaderParameter(o,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(o);return o;}
+const prog=gl.createProgram();gl.attachShader(prog,sh(gl.VERTEX_SHADER,VERT));gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FRAG));
+gl.linkProgram(prog);gl.useProgram(prog);
+const vb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vb);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+const aPos=gl.getAttribLocation(prog,'aPos');gl.enableVertexAttribArray(aPos);gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+const U=n=>gl.getUniformLocation(prog,n);
+const u={res:U('uRes'),yaw:U('uYaw'),pitch:U('uPitch'),dist:U('uDist'),obj:U('uObj')};
+
+const RES=64;
+const tex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tex);
+gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,RES,RES,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+const fb=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,fb);
+gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+
+function render(obj,yaw,pitch){
+  gl.bindFramebuffer(gl.FRAMEBUFFER,fb);gl.viewport(0,0,RES,RES);
+  gl.uniform2f(u.res,RES,RES);gl.uniform1f(u.yaw,yaw);gl.uniform1f(u.pitch,pitch);gl.uniform1f(u.dist,3.5);gl.uniform1i(u.obj,obj);
+  gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);gl.drawArrays(gl.TRIANGLES,0,3);
+  const buf=new Uint8Array(RES*RES*4);gl.readPixels(0,0,RES,RES,gl.RGBA,gl.UNSIGNED_BYTE,buf);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);return buf;
+}
+
+// 10x10 alpha-weighted intensity embedding, mean-subtracted + L2 normed (coarse = noise robust)
+const G=10;
+function embed(buf){const e=new Float32Array(G*G),cell=RES/G;
+  for(let gy=0;gy<G;gy++)for(let gx=0;gx<G;gx++){let s=0,c=0;
+    for(let y=(gy*cell)|0;y<((gy+1)*cell)|0;y++)for(let x=(gx*cell)|0;x<((gx+1)*cell)|0;x++){
+      const i=(y*RES+x)*4,a=buf[i+3]/255;s+=(buf[i]*0.299+buf[i+1]*0.587+buf[i+2]*0.114)/255*a;c++;}
+    e[gy*G+gx]=s/c;}
+  let m=0;for(let i=0;i<e.length;i++)m+=e[i];m/=e.length;
+  let nn=0;for(let i=0;i<e.length;i++){e[i]-=m;nn+=e[i]*e[i];}nn=Math.sqrt(nn)||1;
+  for(let i=0;i<e.length;i++)e[i]/=nn;return e;}
+function dist(a,b){let s=0;for(let i=0;i<a.length;i++){const d=a[i]-b[i];s+=d*d;}return Math.sqrt(s);}
+
+function boxBlur(src,r){if(r<=0)return src.slice();const out=new Uint8Array(src.length);
+  for(let y=0;y<RES;y++)for(let x=0;x<RES;x++){let a=0,g0=0,g1=0,g2=0,c=0;
+    for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){const xx=x+dx,yy=y+dy;
+      if(xx>=0&&xx<RES&&yy>=0&&yy<RES){const i=(yy*RES+xx)*4;g0+=src[i];g1+=src[i+1];g2+=src[i+2];a+=src[i+3];c++;}}
+    const o=(y*RES+x)*4;out[o]=g0/c;out[o+1]=g1/c;out[o+2]=g2/c;out[o+3]=a/c;}return out;}
+// The noise field and the occlusion blobs belong to the micrograph, not to the
+// sliders. Re-rolling them on every input event made the image thrash mid-drag.
+const MAXBLOBS=8;
+function makeNoise(){const n=new Float32Array(RES*RES);
+  for(let i=0;i<n.length;i++)n[i]=Math.random()-0.5;return n;}
+function makeBlobs(){const b=[];
+  for(let j=0;j<MAXBLOBS;j++)b.push({cx:Math.random()*RES,cy:Math.random()*RES,rad:RES*(0.06+Math.random()*0.09)});
+  return b;}
+function micrograph(src,noise,occ,field,blobs){
+  let b=boxBlur(src,1);
+  for(let i=0;i<RES*RES;i++){if(b[i*4+3]>4){const n=field[i]*noise*300;
+    b[i*4]=Math.max(0,Math.min(255,b[i*4]+n));b[i*4+1]=Math.max(0,Math.min(255,b[i*4+1]+n));b[i*4+2]=Math.max(0,Math.min(255,b[i*4+2]+n));}}
+  const k=Math.round(occ*MAXBLOBS);
+  for(let j=0;j<k;j++){const {cx,cy,rad}=blobs[j];
+    for(let y=0;y<RES;y++)for(let x=0;x<RES;x++){const dx=x-cx,dy=y-cy;
+      if(dx*dx+dy*dy<rad*rad){const i=(y*RES+x)*4;b[i]=b[i+1]=b[i+2]=b[i+3]=0;}}}
+  return b;}
+
+function paint(buf,ctx){const img=ctx.createImageData(RES,RES);
+  img.data.set(buf);for(let i=0;i<RES*RES;i++){const a=img.data[i*4+3]/255;
+    img.data[i*4]=img.data[i*4]*a+10*(1-a);img.data[i*4+1]=img.data[i*4+1]*a+10*(1-a);
+    img.data[i*4+2]=img.data[i*4+2]*a+11*(1-a);img.data[i*4+3]=255;}ctx.putImageData(img,0,0);}
+function draw(buf,cid){paint(buf,document.getElementById(cid).getContext('2d'));}
+
+// ---- state ----
+const ST={tau:0.42,noise:0.35,occ:0.2,codebook:[],truth:null,obs:null};
+const bind=(id,key,fmt,out,cb)=>{const el=document.getElementById(id),o=document.getElementById(out);
+  const f=()=>{ST[key]=parseFloat(el.value);o.textContent=fmt(ST[key]);if(cb)cb();};el.oninput=f;f();};
+bind('tau','tau',v=>v.toFixed(2),'vTau');
+bind('noise','noise',v=>Math.round(v*100)+'%','vNoise',()=>{if(ST.truth)regen();});
+bind('occ','occ',v=>Math.round(v*100)+'%','vOcc',()=>{if(ST.truth)regen();});
+
+// STEP 1: build codebook (per-object novelty dedup, pooled for lookup)
+// Built once at 40 yaws, then de-duplicated. Per-demo tuning; the recognition
+// lab searches a 16-yaw grid live instead.
+const YAWN=40, PITCHES=[-0.15,0.4];
+function build(){
+  document.getElementById('build').disabled=true;
+  const perObj=STRUCTS.map(()=>[]);
+  const jobs=[];
+  for(const s of STRUCTS)for(let i=0;i<YAWN;i++)for(const pt of PITCHES)jobs.push({obj:s.id,yaw:i/YAWN*Math.PI*2,pitch:pt});
+  let idx=0, considered=0;
+  const bar=document.getElementById('buildBar');
+  function stepFn(){
+    for(let n=0;n<14&&idx<jobs.length;n++,idx++){const j=jobs[idx];considered++;
+      const emb=embed(render(j.obj,j.yaw,j.pitch));
+      let mind=1e9;for(const e of perObj[j.obj])mind=Math.min(mind,dist(emb,e.emb));
+      if(mind>ST.tau)perObj[j.obj].push({obj:j.obj,yaw:j.yaw,pitch:j.pitch,emb});}
+    bar.style.width=(idx/jobs.length*100)+'%';
+    if(idx<jobs.length)requestAnimationFrame(stepFn); else doneBuild(perObj,considered);
+  }
+  requestAnimationFrame(stepFn);
+}
+function doneBuild(perObj,considered){
+  document.getElementById('build').disabled=false;document.getElementById('buildBar').style.width='0';
+  ST.codebook=[].concat(...perObj);
+  const maxCt=Math.max(...perObj.map(p=>p.length));
+  let html='<div class="bars">';
+  STRUCTS.forEach((s,i)=>{const ct=perObj[i].length;
+    html+=`<div class="b"><div class="nm">${s.name}</div><div class="track"><div style="width:${ct/maxCt*100}%"></div></div><div class="ct">${ct} views</div></div>`;});
+  html+='</div>';
+  const total=ST.codebook.length;
+  html+=`<div class="summ">Considered <b>${considered}</b> rotations, kept <b>${total}</b> (${Math.round((1-total/considered)*100)}% discarded as redundant). Symmetric shapes compress hardest.</div>`;
+  html+='<div class="gallery" id="gal"></div>';
+  document.getElementById('buildOut').innerHTML=html;
+  // thumbnails: first stored view of each object
+  const gal=document.getElementById('gal');
+  STRUCTS.forEach((st,i)=>{const v=perObj[i][0];if(!v)return;
+    const c=document.createElement('canvas');c.width=c.height=RES;c.id='thumb'+i;gal.appendChild(c);
+    paint(render(v.obj,v.yaw,v.pitch),c.getContext('2d'));});
+  document.getElementById('idOut').innerHTML='<div class="empty">Codebook ready. Press <b>New micrograph</b>, then <b>Identify</b>.</div>';
+}
+document.getElementById('build').onclick=build;
+
+// STEP 2: identify by nearest-neighbor lookup
+function regen(){const t=ST.truth;const clean=render(t.obj,t.yaw,t.pitch);
+  ST.obs=micrograph(clean,ST.noise,ST.occ,t.field,t.blobs);draw(ST.obs,'obsC');}
+function newObs(){
+  const obj=Math.random()*STRUCTS.length|0,yaw=Math.random()*Math.PI*2,pitch=-0.15+Math.random()*0.5;
+  ST.truth={obj,yaw,pitch,field:makeNoise(),blobs:makeBlobs()};regen();
+  document.getElementById('matchC').getContext('2d').clearRect(0,0,RES,RES);
+  document.getElementById('idOut').innerHTML='<div class="empty">Micrograph ready. Press <b>Identify</b>.</div>';
+}
+function angErr(a,b){let d=Math.abs(a-b)%(Math.PI*2);if(d>Math.PI)d=Math.PI*2-d;return d*180/Math.PI;}
+function identify(){
+  if(!ST.codebook.length){document.getElementById('idOut').innerHTML='<div class="empty">Build the codebook first.</div>';return;}
+  if(!ST.obs)newObs();
+  const q=embed(ST.obs);
+  let best=null,bd=1e9;
+  for(const e of ST.codebook){const d=dist(q,e.emb);if(d<bd){bd=d;best=e;}}
+  draw(render(best.obj,best.yaw,best.pitch),'matchC');
+  const correct=best.obj===ST.truth.obj;
+  const symmetric=(ST.truth.obj===2||ST.truth.obj===3||ST.truth.obj===0);
+  const yawE=Math.round(angErr(best.yaw,ST.truth.yaw));
+  let html=`<div class="verdict">Identified: <b style="color:${correct?'var(--good)':'var(--bad)'}">${STRUCTS[best.obj].name}</b> ${correct?'✓':'✗'}</div>`;
+  html+=`<div class="summ">Truth: ${STRUCTS[ST.truth.obj].name} · lookup distance ${bd.toFixed(2)}`;
+  html+= symmetric?` · orientation partly ambiguous (symmetric)`:` · yaw error ≈ ${yawE}°`;
+  html+=`<br>Searched <b>${ST.codebook.length}</b> cached embeddings · <b>0</b> renders at query time.</div>`;
+  document.getElementById('idOut').innerHTML=html;
+}
+document.getElementById('newObs').onclick=newObs;
+document.getElementById('run').onclick=identify;
+</script>
