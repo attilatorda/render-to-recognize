@@ -11,7 +11,7 @@
 Everything follows from the first step.
 
 1. **Draw without vertices.** A sphere is one short equation instead of a few thousand triangles. Because the surface is an equation, zooming in produces new detail rather than running out of it: the renderer adds [fBm](https://en.wikipedia.org/wiki/Fractional_Brownian_motion) octaves as the pixels get smaller — the same [level-of-detail](<https://en.wikipedia.org/wiki/Level_of_detail_(computer_graphics)>) trade a game engine makes with meshes — and [supersamples](https://en.wikipedia.org/wiki/Supersampling) the silhouette.
-2. **Recognize by re-drawing.** To identify a hidden object, draw every candidate at every orientation and keep whichever drawing matches the observation. One search returns the object *and* how it is turned. Nothing is trained.
+2. **Recognize by re-drawing.** To identify a hidden object, draw every candidate at every orientation and keep whichever drawing matches the observation. One search returns the object *and* how it is turned. Nothing is trained. "Every orientation" means the whole [rotation group](https://en.wikipedia.org/wiki/3D_rotation_group), not a ring of spins about one axis, and that is what makes the search expensive: SO(3) is three-dimensional, so a grid three times finer costs 27 times the poses.
 3. **Make it fast.** Draw the candidates once and store each view as a short list of numbers; recognition is then a [nearest neighbor search](https://en.wikipedia.org/wiki/Nearest_neighbor_search) with no drawing at query time. Symmetric shapes compress hard, because many of their rotations look identical. Single-particle microscopy assigns orientations this way.
 
 ## The demos
@@ -20,15 +20,17 @@ Everything follows from the first step.
 | --- | --- |
 | `index.html` | Project homepage: live hero, the narrative, and links to the demos. Start here. |
 | `sdf-sculpt-demo.html` | Vertexless renderer. One equation-only surface; orbit it, carve procedural detail, blend in a second blob. Scroll or pinch to magnify up to 64×. View normals and depth as free G-buffer channels. |
-| `sdf-recognition-lab.html` | Analysis by synthesis. A hidden object at a hidden pose is blurred and occluded; the lab renders all five candidates across a pose grid and reports the best match, its orientation, and a confidence ranking. |
-| `micrograph-codebook-lab.html` | The codebook speedup, reskinned as microscopy. Build a de-duplicated view dictionary once, then identify noisy "micrographs" by lookup. |
+| `sdf-recognition-lab.html` | Analysis by synthesis. A hidden object at an orientation drawn uniformly from SO(3) is blurred and occluded; the lab scores all five candidates over 2,560 orientations each, refines the winner, and reports the match, its orientation, and a confidence ranking. Colour is display-only and never reaches the matcher. |
+| `micrograph-codebook-lab.html` | The codebook speedup, reskinned as microscopy. Build a de-duplicated view dictionary over all of SO(3) once, then identify noisy "micrographs" by lookup. An axially symmetric filament collapses to a handful of views where the helix keeps hundreds. |
 
 ## Methods
 
 None of these techniques is new. The work is in building them end to end and making them run in a browser.
 
 - **Rendering.** [Signed distance functions](https://en.wikipedia.org/wiki/Signed_distance_function) and [sphere tracing](https://en.wikipedia.org/wiki/Ray_marching) (Hart, *Sphere Tracing*, 1996; see also Inigo Quilez's articles at iquilezles.org). The holed cube is a [constructive solid geometry](https://en.wikipedia.org/wiki/Constructive_solid_geometry) subtract; edges use rotated-grid [supersampling](https://en.wikipedia.org/wiki/Spatial_anti-aliasing).
-- **Recognition.** Render-and-compare, or [template matching](https://en.wikipedia.org/wiki/Template_matching) against synthesized candidates, which solves [3D pose estimation](https://en.wikipedia.org/wiki/3D_pose_estimation) at the same time. It is the backbone of learned refiners like DeepIM (Li et al., 2018) and CosyPose (Labbé et al., 2020).
+- **Recognition.** Render-and-compare, or [template matching](https://en.wikipedia.org/wiki/Template_matching) against synthesized candidates, which solves [3D pose estimation](https://en.wikipedia.org/wiki/3D_pose_estimation) at the same time. It is the backbone of learned refiners like DeepIM (Li et al., 2018) and CosyPose (Labbé et al., 2020). The pose search is coarse-to-fine: a grid over SO(3), then local refinement around the best few cells. Refining only the single best cell is not enough, because at a grid spacing of 22° a chair keeps just 42% of its peak score and the right basin is often not ranked first.
+- **In-plane rotation is free.** Rolling the camera about its own view axis spins the rendered image and changes nothing else, so one render per view direction is scored against every roll by spinning the observation instead. The recognition lab covers 2,560 orientations per shape with 160 renders. Projection matching in cryo-EM does the same thing for the same reason.
+- **Colour is never evidence.** Objects are drawn in a colour the viewer picks or randomizes, but every buffer the matcher compares is rendered in one neutral grey shared by all shapes, and hues are applied afterwards when a buffer is painted. Verified, not assumed: changing every colour leaves the offscreen renders byte-identical.
 - **Codebook.** The **augmented autoencoder** approach to pose estimation (Sundermeyer et al., *Implicit 3D Orientation Learning*, ECCV 2018), where views are embedded once and recognition is a lookup. Novelty-based de-duplication makes it a small [vector quantization](https://en.wikipedia.org/wiki/Vector_quantization) of the view sphere.
 - **Microscopy framing.** Projection matching, how cryo-EM software (RELION, cryoSPARC) assigns particle orientations in [single particle analysis](https://en.wikipedia.org/wiki/Single_particle_analysis) by comparing images against projections of a 3D map.
 
@@ -58,7 +60,6 @@ python3 -m http.server 8000
 
 ## Where it could go next
 
-- **Coarse-to-fine pose.** Refine locally around the best grid cell to cut orientation error.
 - **Learned embedding.** Replace the hand-made 10×10 vector with a small TensorFlow.js autoencoder trained on the renders. That is the real augmented autoencoder, and these demos already generate perfectly labeled training data.
 - **Real data.** The only realistic path to a publishable result would be running the codebook against a public cryo-EM dataset (EMPIAR, say) with a proper baseline.
 

@@ -24,6 +24,15 @@
   input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;margin-top:-6px;border-radius:50%;background:var(--accent)}
   input[type=range]::-moz-range-track{height:2px;background:var(--line)}
   input[type=range]::-moz-range-thumb{width:14px;height:14px;border:none;border-radius:50%;background:var(--accent)}
+  .crow{display:flex;align-items:center;gap:8px;margin:11px 0}
+  .crow .lbl{font-size:12px;color:var(--dim);white-space:nowrap}
+  input[type=color]{width:36px;height:27px;padding:0;border:1px solid var(--line);
+    border-radius:7px;background:transparent;cursor:pointer}
+  input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
+  input[type=color]::-webkit-color-swatch{border:none;border-radius:5px}
+  .mini{flex:1;font:inherit;font-size:11.5px;color:var(--dim);background:transparent;
+    border:1px solid var(--line);border-radius:8px;padding:6px 9px;cursor:pointer}
+  .mini:hover{color:var(--accent);border-color:var(--accent)}
   .btns{display:flex;gap:8px;margin-top:12px}
   .btns button{flex:1;font:inherit;font-size:13px;padding:10px;border-radius:9px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--ink)}
   .btns button.primary{background:var(--accent);color:#0a0a09;border-color:var(--accent)}
@@ -60,7 +69,7 @@
   <div class="card">
     <div class="step">STEP 1 · BUILD CODEBOOK</div>
     <h2>Novelty-based view dictionary</h2>
-    <div class="cn">Each structure is rendered at many rotations. A view is stored only if its embedding is far from every view already kept, so symmetric structures compress to a handful while asymmetric ones keep more.</div>
+    <div class="cn">Each structure is rendered at orientations spread over the whole <a href="https://en.wikipedia.org/wiki/3D_rotation_group">rotation group SO(3)</a>, not just a ring of spins about one axis: view directions from a Fibonacci sphere, each of them rolled in the image plane. A view is stored only if its embedding is far from every view already kept, so symmetric structures compress to a handful while asymmetric ones keep more.</div>
     <div class="row">
       <label>Novelty threshold <b id="vTau"></b></label>
       <input id="tau" type="range" min="0.12" max="0.9" step="0.01" value="0.42">
@@ -73,7 +82,8 @@
   <div class="card">
     <div class="step">STEP 2 · IDENTIFY</div>
     <h2>Match a noisy micrograph</h2>
-    <div class="cn">One structure is imaged at a hidden orientation, then hit with noise and occlusion. Identity + pose come from the closest codebook entry.</div>
+    <div class="cn">One structure is imaged at a hidden orientation drawn uniformly from SO(3), then hit with noise and occlusion. Identity + pose come from the closest codebook entry.</div>
+    <div class="cn">Expect identity to survive this and orientation to survive it only partly. Measured on this codebook: the noise and occlusion move an embedding about as far as a 10&ndash;20&deg; rotation does, while a different structure sits four to five times further away. So the lookup names the structure reliably, and pins the pose only to roughly the resolution of the stored views. That is the trade that buys zero renders at query time; a learned embedding is what would sharpen it.</div>
     <div class="stage">
       <div class="cellv"><h4>MICROGRAPH</h4><canvas id="obsC" width="64" height="64"></canvas></div>
       <div class="cellv"><h4>CODEBOOK MATCH</h4><canvas id="matchC" width="64" height="64"></canvas></div>
@@ -86,6 +96,12 @@
       <label>Occlusion <b id="vOcc"></b></label>
       <input id="occ" type="range" min="0" max="1" step="0.01" value="0.2">
     </div>
+    <div class="crow">
+      <span class="lbl">Stain colour</span>
+      <input id="stain" type="color" value="#7fd1c8">
+      <button id="shuffle" class="mini">Randomize all</button>
+    </div>
+    <div class="cn">False colour, applied when a buffer is drawn to the screen. Every view in the codebook and every micrograph is rendered in the same neutral grey, so the lookup runs on shape alone and a new stain cannot change a single answer.</div>
     <div class="btns">
       <button id="newObs">New micrograph</button>
       <button id="run" class="primary">Identify</button>
@@ -105,10 +121,70 @@ const STRUCTS=[
   {id:3,name:'Capsid ring'},
 ];
 
+// ---- ORIENTATION ----------------------------------------------------------
+// A pose is a full 3x3 rotation stored column-major, the layout a GLSL mat3
+// wants. Yaw and pitch alone can only ever swing the camera around one axis and
+// tip it; these cover all of SO(3), which is what a real pose search has to.
+function mMul(a,b){const o=new Float32Array(9);
+  for(let c=0;c<3;c++)for(let r=0;r<3;r++){let s=0;
+    for(let k=0;k<3;k++)s+=a[k*3+r]*b[c*3+k];o[c*3+r]=s;}return o;}
+function mAxis(x,y,z,t){const c=Math.cos(t),s=Math.sin(t),k=1.0-c;
+  return new Float32Array([c+x*x*k, y*x*k+z*s, z*x*k-y*s,
+                           x*y*k-z*s, c+y*y*k, z*y*k+x*s,
+                           x*z*k+y*s, y*z*k-x*s, c+z*z*k]);}
+// Shoemake's method. Three uniform Euler angles are NOT uniform over SO(3):
+// they crowd the poles, which would quietly make the hidden pose easy to find.
+function mRand(){const u1=Math.random(),u2=Math.random()*6.283185307,u3=Math.random()*6.283185307;
+  const s1=Math.sqrt(1-u1),s2=Math.sqrt(u1);
+  const x=s1*Math.sin(u2),y=s1*Math.cos(u2),z=s2*Math.sin(u3),w=s2*Math.cos(u3);
+  return new Float32Array([1-2*(y*y+z*z), 2*(x*y+z*w), 2*(x*z-y*w),
+                           2*(x*y-z*w), 1-2*(x*x+z*z), 2*(y*z+x*w),
+                           2*(x*z+y*w), 2*(y*z-x*w), 1-2*(x*x+y*y)]);}
+// Geodesic angle between two orientations, in degrees. trace(A'B) is just the
+// dot product of the flat arrays while both use the same layout.
+function mAng(a,b){let t=0;for(let i=0;i<9;i++)t+=a[i]*b[i];
+  return Math.acos(Math.max(-1,Math.min(1,(t-1)*0.5)))*57.29577951;}
+// Near-uniform directions on a sphere, returned as rotations whose third column
+// IS the view direction, which is where the camera sits. A product of Euler
+// angles would pile most of its samples around the poles.
+function viewGrid(nv){
+  const out=[],ga=Math.PI*(3-Math.sqrt(5));
+  for(let i=0;i<nv;i++){
+    const z=1-(2*i+1)/nv,r=Math.sqrt(Math.max(0,1-z*z)),th=ga*i;
+    const dx=r*Math.cos(th),dy=r*Math.sin(th),dz=z;
+    let hx=0,hy=1,hz=0;if(Math.abs(dy)>0.99){hx=1;hy=0;}
+    let ux=hy*dz-hz*dy,uy=hz*dx-hx*dz,uz=hx*dy-hy*dx;
+    const n=Math.hypot(ux,uy,uz)||1;ux/=n;uy/=n;uz/=n;
+    out.push(new Float32Array([ux,uy,uz,
+      dy*uz-dz*uy,dz*ux-dx*uz,dx*uy-dy*ux, dx,dy,dz]));}
+  return out;}
+// A near-uniform grid over SO(3): every view direction spun through nr rolls.
+function poseGrid(nv,nr){
+  const out=[];
+  for(const base of viewGrid(nv))
+    for(let k=0;k<nr;k++)out.push(mMul(base,mAxis(0,0,1,k/nr*6.283185307)));
+  return out;}
+// ---- COLOUR ---------------------------------------------------------------
+// Colour is display only, everywhere in this file. Every buffer that reaches
+// embed() is rendered in the one neutral grey the shader hard-codes, shared by
+// all four structures, so a hue can never become evidence. Hues are applied
+// afterwards, on paint.
+function hsl(h,s,l){const f=n=>{const k=(n+h*12)%12,a=s*Math.min(l,1-l);
+  return l-a*Math.max(-1,Math.min(Math.min(k-3,9-k),1));};return [f(0),f(8),f(4)];}
+// Golden-angle hue spacing. Three raw random channels give mud about half the
+// time and two structures the same colour more often than you would think.
+function palette(n){const out=[];let h=Math.random();
+  for(let i=0;i<n;i++){h=(h+0.6180339887)%1;
+    out.push(hsl(h,0.46+Math.random()*0.22,0.58+Math.random()*0.10));}return out;}
+function hex(c){return '#'+c.map(v=>Math.round(Math.max(0,Math.min(1,v))*255)
+  .toString(16).padStart(2,'0')).join('');}
+function unhex(s){return [parseInt(s.slice(1,3),16)/255,
+  parseInt(s.slice(3,5),16)/255,parseInt(s.slice(5,7),16)/255];}
+
 const VERT=`attribute vec2 aPos;void main(){gl_Position=vec4(aPos,0.0,1.0);}`;
 const FRAG=`
 precision highp float;
-uniform vec2 uRes; uniform float uYaw,uPitch,uDist; uniform int uObj;
+uniform vec2 uRes; uniform mat3 uRot; uniform float uDist; uniform int uObj;
 float smin(float a,float b,float k){float h=clamp(0.5+0.5*(b-a)/k,0.0,1.0);return mix(b,a,h)-k*h*(1.0-h);}
 float sdCap(vec3 p,vec3 a,vec3 b,float r){vec3 pa=p-a,ba=b-a;float h=clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0);return length(pa-ba*h)-r;}
 float sdTorus(vec3 p,vec2 t){vec2 q=vec2(length(p.xz)-t.x,p.y);return length(q)-t.y;}
@@ -135,20 +211,22 @@ float mapObj(vec3 p){
 }
 vec3 nrm(vec3 p){vec2 e=vec2(0.0008,0.0);
   return normalize(vec3(mapObj(p+e.xyy)-mapObj(p-e.xyy),mapObj(p+e.yxy)-mapObj(p-e.yxy),mapObj(p+e.yyx)-mapObj(p-e.yyx)));}
-mat3 orbit(float y,float pt){float cy=cos(y),sy=sin(y),cp=cos(pt),sp=sin(pt);
-  return mat3(cy,0.0,-sy,sy*sp,cp,cy*sp,sy*cp,-sp,cy*cp);}
 void main(){
   vec2 uv=(gl_FragCoord.xy-0.5*uRes)/uRes.y;
-  mat3 R=orbit(uYaw,uPitch);
-  vec3 ro=R*vec3(0.0,0.0,uDist);
-  vec3 ww=normalize(-ro),uu=normalize(cross(ww,R*vec3(0,1,0))),vv=cross(uu,ww);
+  // The camera frame is the columns of uRot, so any orientation in SO(3) is
+  // reachable at the same cost and nothing gimbal-locks at the poles.
+  vec3 ro=uRot[2]*uDist;
+  vec3 ww=-uRot[2],uu=uRot[0],vv=uRot[1];
   vec3 rd=normalize(uv.x*uu+uv.y*vv+1.7*ww);
   float t=0.0,tmax=uDist+3.0;bool hit=false;
   for(int i=0;i<120;i++){vec3 p=ro+rd*t;float d=mapObj(p);if(d<0.001*t){hit=true;break;}t+=d*0.85;if(t>tmax)break;}
   if(!hit){gl_FragColor=vec4(0.0);return;}
   vec3 p=ro+rd*t,n=nrm(p);
   float diff=clamp(dot(n,normalize(vec3(0.6,0.85,0.5))),0.0,1.0);
-  vec3 col=vec3(0.55,0.78,0.9)*(0.2+0.85*diff);   // cool "stain" tone
+  // One neutral grey for every structure. Every buffer produced here feeds
+  // embed(), and a per-structure tint would let the lookup win on colour rather
+  // than on shape. The stain colour is applied in paint(), after embedding.
+  vec3 col=vec3(0.80,0.81,0.83)*(0.2+0.85*diff);
   gl_FragColor=vec4(pow(col,vec3(0.4545)),1.0);
 }`;
 function sh(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
@@ -159,7 +237,7 @@ const vb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,vb);
 gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
 const aPos=gl.getAttribLocation(prog,'aPos');gl.enableVertexAttribArray(aPos);gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
 const U=n=>gl.getUniformLocation(prog,n);
-const u={res:U('uRes'),yaw:U('uYaw'),pitch:U('uPitch'),dist:U('uDist'),obj:U('uObj')};
+const u={res:U('uRes'),rot:U('uRot'),dist:U('uDist'),obj:U('uObj')};
 
 const RES=64;
 const tex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tex);
@@ -168,9 +246,9 @@ gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);gl.texParameter
 const fb=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,fb);
 gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);
 
-function render(obj,yaw,pitch){
+function render(obj,rot){
   gl.bindFramebuffer(gl.FRAMEBUFFER,fb);gl.viewport(0,0,RES,RES);
-  gl.uniform2f(u.res,RES,RES);gl.uniform1f(u.yaw,yaw);gl.uniform1f(u.pitch,pitch);gl.uniform1f(u.dist,3.5);gl.uniform1i(u.obj,obj);
+  gl.uniform2f(u.res,RES,RES);gl.uniformMatrix3fv(u.rot,false,rot);gl.uniform1f(u.dist,3.5);gl.uniform1i(u.obj,obj);
   gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);gl.drawArrays(gl.TRIANGLES,0,3);
   const buf=new Uint8Array(RES*RES*4);gl.readPixels(0,0,RES,RES,gl.RGBA,gl.UNSIGNED_BYTE,buf);
   gl.bindFramebuffer(gl.FRAMEBUFFER,null);return buf;
@@ -211,36 +289,62 @@ function micrograph(src,noise,occ,field,blobs){
       if(dx*dx+dy*dy<rad*rad){const i=(y*RES+x)*4;b[i]=b[i+1]=b[i+2]=b[i+3]=0;}}}
   return b;}
 
-function paint(buf,ctx){const img=ctx.createImageData(RES,RES);
+// The buffer arriving here is always the neutral render. `col` is a false
+// colour applied on the way to the screen, long after embed() has had its say.
+// Normalised so the brightest channel stays 1: a stain should change the hue of
+// the image, not dim it.
+function paint(buf,ctx,col){const img=ctx.createImageData(RES,RES);
+  const c=col||[1,1,1],m=Math.max(c[0],c[1],c[2],1e-3);
+  const tr=c[0]/m,tg=c[1]/m,tb=c[2]/m;
   img.data.set(buf);for(let i=0;i<RES*RES;i++){const a=img.data[i*4+3]/255;
-    img.data[i*4]=img.data[i*4]*a+10*(1-a);img.data[i*4+1]=img.data[i*4+1]*a+10*(1-a);
-    img.data[i*4+2]=img.data[i*4+2]*a+11*(1-a);img.data[i*4+3]=255;}ctx.putImageData(img,0,0);}
-function draw(buf,cid){paint(buf,document.getElementById(cid).getContext('2d'));}
+    img.data[i*4]=img.data[i*4]*tr*a+10*(1-a);img.data[i*4+1]=img.data[i*4+1]*tg*a+10*(1-a);
+    img.data[i*4+2]=img.data[i*4+2]*tb*a+11*(1-a);img.data[i*4+3]=255;}ctx.putImageData(img,0,0);}
+function draw(buf,cid,col){paint(buf,document.getElementById(cid).getContext('2d'),col);}
 
 // ---- state ----
-const ST={tau:0.42,noise:0.35,occ:0.2,codebook:[],truth:null,obs:null};
+const ST={tau:0.42,noise:0.35,occ:0.2,codebook:[],truth:null,obs:null,
+          stain:null,match:null,perObj:null,colors:palette(STRUCTS.length)};
+ST.stain=hsl(Math.random(),0.5,0.62);
 const bind=(id,key,fmt,out,cb)=>{const el=document.getElementById(id),o=document.getElementById(out);
   const f=()=>{ST[key]=parseFloat(el.value);o.textContent=fmt(ST[key]);if(cb)cb();};el.oninput=f;f();};
 bind('tau','tau',v=>v.toFixed(2),'vTau');
 bind('noise','noise',v=>Math.round(v*100)+'%','vNoise',()=>{if(ST.truth)regen();});
 bind('occ','occ',v=>Math.round(v*100)+'%','vOcc',()=>{if(ST.truth)regen();});
 
+// Colour controls. Nothing here touches a stored embedding, so repaint() only
+// has to redraw: the codebook itself never needs rebuilding for a colour.
+const stainEl=document.getElementById('stain');
+function repaint(){
+  if(ST.obs)draw(ST.obs,'obsC',ST.stain);
+  if(ST.match)draw(render(ST.match.obj,ST.match.rot),'matchC',ST.colors[ST.match.obj]);
+  if(ST.perObj)STRUCTS.forEach((s,i)=>{const v=ST.perObj[i][0],c=document.getElementById('thumb'+i);
+    if(v&&c)paint(render(v.obj,v.rot),c.getContext('2d'),ST.colors[i]);});
+}
+stainEl.value=hex(ST.stain);
+stainEl.oninput=()=>{ST.stain=unhex(stainEl.value);repaint();};
+document.getElementById('shuffle').onclick=()=>{
+  ST.colors=palette(STRUCTS.length);ST.stain=hsl(Math.random(),0.5,0.62);
+  stainEl.value=hex(ST.stain);repaint();};
+
 // STEP 1: build codebook (per-object novelty dedup, pooled for lookup)
-// Built once at 40 yaws, then de-duplicated. Per-demo tuning; the recognition
-// lab searches a 16-yaw grid live instead.
-const YAWN=40, PITCHES=[-0.15,0.4];
+// Built once over a grid covering all of SO(3): 48 view directions off a
+// Fibonacci sphere, each spun through 6 in-plane rolls. This is the demo that
+// can afford it, because it renders once up front; the recognition lab searches
+// a coarser grid live on every query and then refines the winner.
+const NVIEW=48, NROLL=6;
+const GRID=poseGrid(NVIEW,NROLL);
 function build(){
   document.getElementById('build').disabled=true;
   const perObj=STRUCTS.map(()=>[]);
   const jobs=[];
-  for(const s of STRUCTS)for(let i=0;i<YAWN;i++)for(const pt of PITCHES)jobs.push({obj:s.id,yaw:i/YAWN*Math.PI*2,pitch:pt});
+  for(const s of STRUCTS)for(const rot of GRID)jobs.push({obj:s.id,rot});
   let idx=0, considered=0;
   const bar=document.getElementById('buildBar');
   function stepFn(){
-    for(let n=0;n<14&&idx<jobs.length;n++,idx++){const j=jobs[idx];considered++;
-      const emb=embed(render(j.obj,j.yaw,j.pitch));
+    for(let n=0;n<24&&idx<jobs.length;n++,idx++){const j=jobs[idx];considered++;
+      const emb=embed(render(j.obj,j.rot));
       let mind=1e9;for(const e of perObj[j.obj])mind=Math.min(mind,dist(emb,e.emb));
-      if(mind>ST.tau)perObj[j.obj].push({obj:j.obj,yaw:j.yaw,pitch:j.pitch,emb});}
+      if(mind>ST.tau)perObj[j.obj].push({obj:j.obj,rot:j.rot,emb});}
     bar.style.width=(idx/jobs.length*100)+'%';
     if(idx<jobs.length)requestAnimationFrame(stepFn); else doneBuild(perObj,considered);
   }
@@ -248,48 +352,54 @@ function build(){
 }
 function doneBuild(perObj,considered){
   document.getElementById('build').disabled=false;document.getElementById('buildBar').style.width='0';
-  ST.codebook=[].concat(...perObj);
+  ST.perObj=perObj;ST.codebook=[].concat(...perObj);
   const maxCt=Math.max(...perObj.map(p=>p.length));
   let html='<div class="bars">';
   STRUCTS.forEach((s,i)=>{const ct=perObj[i].length;
     html+=`<div class="b"><div class="nm">${s.name}</div><div class="track"><div style="width:${ct/maxCt*100}%"></div></div><div class="ct">${ct} views</div></div>`;});
   html+='</div>';
   const total=ST.codebook.length;
-  html+=`<div class="summ">Considered <b>${considered}</b> rotations, kept <b>${total}</b> (${Math.round((1-total/considered)*100)}% discarded as redundant). Symmetric shapes compress hardest.</div>`;
+  html+=`<div class="summ">Considered <b>${considered}</b> orientations across SO(3), kept <b>${total}</b> (${Math.round((1-total/considered)*100)}% discarded as redundant). Symmetric shapes compress hardest: a filament looks the same from every direction around its own axis, so almost the entire sphere collapses to one entry.</div>`;
   html+='<div class="gallery" id="gal"></div>';
   document.getElementById('buildOut').innerHTML=html;
   // thumbnails: first stored view of each object
   const gal=document.getElementById('gal');
   STRUCTS.forEach((st,i)=>{const v=perObj[i][0];if(!v)return;
     const c=document.createElement('canvas');c.width=c.height=RES;c.id='thumb'+i;gal.appendChild(c);
-    paint(render(v.obj,v.yaw,v.pitch),c.getContext('2d'));});
+    paint(render(v.obj,v.rot),c.getContext('2d'),ST.colors[i]);});
   document.getElementById('idOut').innerHTML='<div class="empty">Codebook ready. Press <b>New micrograph</b>, then <b>Identify</b>.</div>';
 }
 document.getElementById('build').onclick=build;
 
 // STEP 2: identify by nearest-neighbor lookup
-function regen(){const t=ST.truth;const clean=render(t.obj,t.yaw,t.pitch);
-  ST.obs=micrograph(clean,ST.noise,ST.occ,t.field,t.blobs);draw(ST.obs,'obsC');}
+function regen(){const t=ST.truth;const clean=render(t.obj,t.rot);
+  ST.obs=micrograph(clean,ST.noise,ST.occ,t.field,t.blobs);draw(ST.obs,'obsC',ST.stain);}
 function newObs(){
-  const obj=Math.random()*STRUCTS.length|0,yaw=Math.random()*Math.PI*2,pitch=-0.15+Math.random()*0.5;
-  ST.truth={obj,yaw,pitch,field:makeNoise(),blobs:makeBlobs()};regen();
+  const obj=Math.random()*STRUCTS.length|0;
+  // Uniform over SO(3). The old sampler rolled a yaw and a pitch inside a
+  // 20-degree band, so the particle was always seen from the same latitude and
+  // a codebook of yaws was never actually tested.
+  ST.truth={obj,rot:mRand(),field:makeNoise(),blobs:makeBlobs()};
+  ST.match=null;regen();
   document.getElementById('matchC').getContext('2d').clearRect(0,0,RES,RES);
   document.getElementById('idOut').innerHTML='<div class="empty">Micrograph ready. Press <b>Identify</b>.</div>';
 }
-function angErr(a,b){let d=Math.abs(a-b)%(Math.PI*2);if(d>Math.PI)d=Math.PI*2-d;return d*180/Math.PI;}
 function identify(){
   if(!ST.codebook.length){document.getElementById('idOut').innerHTML='<div class="empty">Build the codebook first.</div>';return;}
   if(!ST.obs)newObs();
   const q=embed(ST.obs);
   let best=null,bd=1e9;
   for(const e of ST.codebook){const d=dist(q,e.emb);if(d<bd){bd=d;best=e;}}
-  draw(render(best.obj,best.yaw,best.pitch),'matchC');
+  ST.match=best;
+  draw(render(best.obj,best.rot),'matchC',ST.colors[best.obj]);
   const correct=best.obj===ST.truth.obj;
+  // A filament, a capsid ring and a globular blob all have rotations that map
+  // them onto themselves, so a geodesic angle is not an error for them.
   const symmetric=(ST.truth.obj===2||ST.truth.obj===3||ST.truth.obj===0);
-  const yawE=Math.round(angErr(best.yaw,ST.truth.yaw));
+  const angE=Math.round(mAng(best.rot,ST.truth.rot));
   let html=`<div class="verdict">Identified: <b style="color:${correct?'var(--good)':'var(--bad)'}">${STRUCTS[best.obj].name}</b> ${correct?'✓':'✗'}</div>`;
   html+=`<div class="summ">Truth: ${STRUCTS[ST.truth.obj].name} · lookup distance ${bd.toFixed(2)}`;
-  html+= symmetric?` · orientation partly ambiguous (symmetric)`:` · yaw error ≈ ${yawE}°`;
+  html+= symmetric?` · orientation partly ambiguous (symmetric)`:` · orientation error ≈ ${angE}°`;
   html+=`<br>Searched <b>${ST.codebook.length}</b> cached embeddings · <b>0</b> renders at query time.</div>`;
   document.getElementById('idOut').innerHTML=html;
 }
