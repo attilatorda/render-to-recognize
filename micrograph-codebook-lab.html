@@ -4,7 +4,9 @@
 <meta name="description" content="Projection matching the cryo-EM way: build a codebook of rendered views once, then identify a noisy micrograph by nearest-neighbor lookup, with no rendering at query time.">
 <title>Micrograph Codebook Lab: projection matching</title>
 <style>
-  :root{--ink:#e9e4d8;--dim:#8a8578;--line:#2a2a24;--panel:rgba(14,14,12,.72);--accent:#7fd1c8;--good:#8fd18a;--bad:#d18a8a}
+  :root{--ink:#e9e4d8;--dim:#8a8578;--line:#2a2a24;--panel:rgba(14,14,12,.72);--accent:#7fd1c8;--good:#8fd18a;--bad:#d18a8a;
+    /* the third verdict: right structure, orientation only partly */
+    --warn:#d1c48a}
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{min-height:100%;background:#0a0a09;color:var(--ink);
     font-family:"IBM Plex Sans",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
@@ -50,11 +52,19 @@
   .gallery{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
   .gallery canvas{width:52px;height:52px;background:#0a0a09;border-radius:6px;border:1px solid var(--line)}
   .stage{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:4px 0 6px}
+  .stage.three{grid-template-columns:repeat(3,1fr)}
+  .stage.three .cellv canvas{max-width:110px}
   .cellv{text-align:center}
   .cellv h4{font-size:10.5px;color:var(--dim);font-weight:500;margin-bottom:8px;letter-spacing:.2px}
   .cellv canvas{width:100%;max-width:180px;aspect-ratio:1;background:#0a0a09;border-radius:8px}
   .verdict{font-size:15px;margin:10px 0 8px}
   .verdict b{font-weight:600}
+  .badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:7px;
+    border:1px solid currentColor;vertical-align:2px;white-space:nowrap}
+  /* the .disclaim rule above, in the warning colour */
+  .caveat{font-size:11.5px;line-height:1.5;border-left:2px solid currentColor;
+    padding-left:10px;margin:10px 0}
+  .bars .ct .fl{color:var(--warn)}
   .empty{color:var(--dim);font-size:12px;text-align:center;padding:14px}
   .home{display:inline-block;font-size:12px;color:var(--dim);text-decoration:none;margin-bottom:14px}
   .home:hover{color:var(--accent)}
@@ -84,9 +94,10 @@
     <h2>Match a noisy micrograph</h2>
     <div class="cn">One structure is imaged at a hidden orientation drawn uniformly from SO(3), then hit with noise and occlusion. Identity + pose come from the closest codebook entry.</div>
     <div class="cn">Expect identity to survive this and orientation to survive it only partly. Measured on this codebook: the noise and occlusion move an embedding about as far as a 10&ndash;20&deg; rotation does, while a different structure sits four to five times further away. So the lookup names the structure reliably, and pins the pose only to roughly the resolution of the stored views. That is the trade that buys zero renders at query time; a learned embedding is what would sharpen it.</div>
-    <div class="stage">
+    <div class="stage" id="stage">
       <div class="cellv"><h4>MICROGRAPH</h4><canvas id="obsC" width="64" height="64"></canvas></div>
-      <div class="cellv"><h4>CODEBOOK MATCH</h4><canvas id="matchC" width="64" height="64"></canvas></div>
+      <div class="cellv"><h4 id="matchH">CODEBOOK MATCH</h4><canvas id="matchC" width="64" height="64"></canvas></div>
+      <div class="cellv" id="rivalCell" hidden><h4 id="rivalH">RUNNER-UP</h4><canvas id="rivalC" width="64" height="64"></canvas></div>
     </div>
     <div class="row">
       <label>Noise <b id="vNoise"></b></label>
@@ -256,14 +267,26 @@ function render(obj,rot){
 
 // 10x10 alpha-weighted intensity embedding, mean-subtracted + L2 normed (coarse = noise robust)
 const G=10;
-function embed(buf){const e=new Float32Array(G*G),cell=RES/G;
+// The raw per-cell means, before the mean-subtract and the norm. The tie-break in
+// identify() has to renormalise over a SUBSET of the cells, and it cannot do that
+// from a vector that was already normalised over all hundred of them.
+function cells(buf){const e=new Float32Array(G*G),cell=RES/G;
   for(let gy=0;gy<G;gy++)for(let gx=0;gx<G;gx++){let s=0,c=0;
     for(let y=(gy*cell)|0;y<((gy+1)*cell)|0;y++)for(let x=(gx*cell)|0;x<((gx+1)*cell)|0;x++){
       const i=(y*RES+x)*4,a=buf[i+3]/255;s+=(buf[i]*0.299+buf[i+1]*0.587+buf[i+2]*0.114)/255*a;c++;}
     e[gy*G+gx]=s/c;}
-  let m=0;for(let i=0;i<e.length;i++)m+=e[i];m/=e.length;
-  let nn=0;for(let i=0;i<e.length;i++){e[i]-=m;nn+=e[i]*e[i];}nn=Math.sqrt(nn)||1;
-  for(let i=0;i<e.length;i++)e[i]/=nn;return e;}
+  return e;}
+// Mean-subtract and L2 norm over whichever cells the mask allows. mask=null is
+// the original whole-vector behaviour, so embed() is unchanged for every caller.
+function normed(e,mask){const out=Float32Array.from(e);
+  let m=0,c=0;for(let i=0;i<out.length;i++)if(!mask||mask[i]){m+=out[i];c++;}
+  m/=(c||1);
+  let nn=0;for(let i=0;i<out.length;i++){
+    if(mask&&!mask[i]){out[i]=0;continue;}
+    out[i]-=m;nn+=out[i]*out[i];}
+  nn=Math.sqrt(nn)||1;
+  for(let i=0;i<out.length;i++)out[i]/=nn;return out;}
+function embed(buf){return normed(cells(buf),null);}
 function dist(a,b){let s=0;for(let i=0;i<a.length;i++){const d=a[i]-b[i];s+=d*d;}return Math.sqrt(s);}
 
 function boxBlur(src,r){if(r<=0)return src.slice();const out=new Uint8Array(src.length);
@@ -342,24 +365,78 @@ function build(){
   const bar=document.getElementById('buildBar');
   function stepFn(){
     for(let n=0;n<24&&idx<jobs.length;n++,idx++){const j=jobs[idx];considered++;
-      const emb=embed(render(j.obj,j.rot));
-      let mind=1e9;for(const e of perObj[j.obj])mind=Math.min(mind,dist(emb,e.emb));
-      if(mind>ST.tau)perObj[j.obj].push({obj:j.obj,rot:j.rot,emb});}
+      const raw=cells(render(j.obj,j.rot)), emb=normed(raw,null);
+      // The old loop computed this minimum and then threw it away. Keeping the
+      // argmin turns a discarded view into a recorded fact: WHICH entry it
+      // collapsed into, and how far round the sphere it had to travel to get
+      // there. That second number is the structure's own symmetry, measured
+      // rather than asserted -- a filament looks the same from every direction
+      // about its axis, so its surviving entry ends up with a spread near 180.
+      let mind=1e9,arg=null;
+      for(const e of perObj[j.obj]){const d=dist(emb,e.emb);if(d<mind){mind=d;arg=e;}}
+      if(mind>ST.tau)perObj[j.obj].push({obj:j.obj,rot:j.rot,emb,raw,hits:0,spread:0,rival:null});
+      else if(arg){arg.hits++;arg.spread=Math.max(arg.spread,mAng(arg.rot,j.rot));}}
     bar.style.width=(idx/jobs.length*100)+'%';
     if(idx<jobs.length)requestAnimationFrame(stepFn); else doneBuild(perObj,considered);
   }
   requestAnimationFrame(stepFn);
 }
+// The de-duplication above only ever compares a view against others of the SAME
+// structure, so nothing in the build has ever noticed that a helix seen end-on
+// might look like a filament. That is the confusion which actually costs an
+// identification, and it was the one thing the codebook did not record. One pass
+// over the pooled book fixes it; a few hundred entries make all-pairs free.
+//
+// The threshold is ST.tau, reused deliberately: it is already the distance at
+// which this build declares two views to be the same picture. Applying that same
+// standard across structures needs no second slider and no second judgement.
+function flagConfusable(codebook,tau){
+  let n=0;
+  for(const e of codebook){
+    let bd=1e9,bf=null;
+    for(const f of codebook){ if(f.obj===e.obj)continue;
+      const d=dist(e.emb,f.emb); if(d<bd){bd=d;bf=f;} }
+    e.rival = (bf&&bd<tau) ? {entry:bf,d:bd} : null;
+    if(e.rival)n++;
+  }
+  return n;
+}
 function doneBuild(perObj,considered){
   document.getElementById('build').disabled=false;document.getElementById('buildBar').style.width='0';
   ST.perObj=perObj;ST.codebook=[].concat(...perObj);
+  const nConf=flagConfusable(ST.codebook,ST.tau);
   const maxCt=Math.max(...perObj.map(p=>p.length));
   let html='<div class="bars">';
   STRUCTS.forEach((s,i)=>{const ct=perObj[i].length;
-    html+=`<div class="b"><div class="nm">${s.name}</div><div class="track"><div style="width:${ct/maxCt*100}%"></div></div><div class="ct">${ct} views</div></div>`;});
+    const cf=perObj[i].filter(e=>e.rival).length;
+    html+=`<div class="b"><div class="nm">${s.name}</div><div class="track"><div style="width:${ct/maxCt*100}%"></div></div><div class="ct">${ct} views${cf?` <span class="fl">&#9888;${cf}</span>`:''}</div></div>`;});
   html+='</div>';
   const total=ST.codebook.length;
   html+=`<div class="summ">Considered <b>${considered}</b> orientations across SO(3), kept <b>${total}</b> (${Math.round((1-total/considered)*100)}% discarded as redundant). Symmetric shapes compress hardest: a filament looks the same from every direction around its own axis, so almost the entire sphere collapses to one entry.</div>`;
+  // What the discarded views were worth: the widest angle each surviving entry
+  // swallowed. This is the number identify() now grades orientation against,
+  // instead of the hardcoded list of "symmetric" structures it used to consult.
+  // The MEDIAN, not the maximum: with this many poses some entry of every
+  // structure ends up swallowing an antipode, so the max reads 180 across the
+  // board and separates nothing. The median says what a TYPICAL stored view
+  // stands in for, which is the number a pose error should be judged against.
+  const spread=STRUCTS.map((s,i)=>{
+    const v=perObj[i].map(e=>e.spread).sort((a,b)=>a-b);
+    return {name:s.name,med:Math.round(v.length?v[v.length>>1]:0)};});
+  html+=`<div class="summ">Orientation gap a typical stored view swallowed (median): `+
+    spread.map(s=>`${s.name} <b>${s.med}&deg;</b>`).join(' &middot; ')+
+    `. A large number means the structure genuinely looks the same from those directions, `+
+    `so a lookup that returns either one is not making a mistake &mdash; which is what the `+
+    `verdict below grades orientation against, per entry, instead of a hardcoded list of `+
+    `which structures count as symmetric.</div>`;
+  html+= nConf
+    ? `<div class="caveat" style="color:var(--warn)"><b>&#9888; ${nConf} of ${total} entries have `+
+      `a look-alike in a different structure.</b> Those are the entries a noisy micrograph can `+
+      `land on by accident, and until now nothing in the build looked for them: the novelty `+
+      `test only ever compared a view against others of its own structure. Identification now `+
+      `checks them a second way before answering.</div>`
+    : `<div class="summ">No entry is within ${ST.tau.toFixed(2)} of an entry from a different `+
+      `structure, so at this threshold the four are separable on the embedding alone.</div>`;
   html+='<div class="gallery" id="gal"></div>';
   document.getElementById('buildOut').innerHTML=html;
   // thumbnails: first stored view of each object
@@ -384,23 +461,132 @@ function newObs(){
   document.getElementById('matchC').getContext('2d').clearRect(0,0,RES,RES);
   document.getElementById('idOut').innerHTML='<div class="empty">Micrograph ready. Press <b>Identify</b>.</div>';
 }
+// A margin this thin means the nearest entry is not meaningfully nearer than the
+// runner-up, so the single argmin the old lookup returned was overstating what it
+// knew.
+const MARGIN_T=1.15;
+// The second opinion: the same descriptor and the same metric, but renormalised
+// over only the cells the micrograph still has coverage in. Occlusion zeroes
+// alpha, and the embedding is normalised over ALL hundred cells, so a blob does
+// not merely hide part of the picture -- it drags the mean and the norm, and
+// every candidate is then compared through that damage. Costs one renormalisation
+// per candidate and, crucially, still ZERO renders.
+//
+// It is NOT allowed to decide, and that was measured rather than assumed. Over 40
+// micrographs at noise 0.35 / occlusion 0.5 the plain whole-vector lookup got the
+// identity right 32 times, this masked version 29, and a union-mask variant 26;
+// at occlusion 0.2 the numbers were 36 / 36 / 33. Masking loses more than it
+// saves, because a cell with no coverage is ambiguous evidence -- occlusion and
+// plain empty background look identical from inside the query -- and dropping
+// those cells throws away the silhouette, which is the strongest cue there is.
+//
+// So it testifies instead. Two methods that disagree are a better ambiguity
+// signal than either is an answer, and that disagreement is what puts a second
+// possibility on the screen.
+function maskedDist(qRaw,eRaw,mask){
+  return dist(normed(qRaw,mask),normed(eRaw,mask));
+}
+// Which cells survived: a cell is usable when the micrograph has any coverage
+// there at all.
+function supportMask(buf){
+  const m=new Uint8Array(G*G),cell=RES/G;
+  for(let gy=0;gy<G;gy++)for(let gx=0;gx<G;gx++){let a=0,c=0;
+    for(let y=(gy*cell)|0;y<((gy+1)*cell)|0;y++)for(let x=(gx*cell)|0;x<((gx+1)*cell)|0;x++){
+      a+=buf[(y*RES+x)*4+3];c++;}
+    m[gy*G+gx]=(a/c)>4?1:0;}
+  return m;
+}
 function identify(){
   if(!ST.codebook.length){document.getElementById('idOut').innerHTML='<div class="empty">Build the codebook first.</div>';return;}
   if(!ST.obs)newObs();
-  const q=embed(ST.obs);
+  const qRaw=cells(ST.obs), q=normed(qRaw,null);
+  // One pass, but keep the best entry PER STRUCTURE rather than the single
+  // argmin. The runner-up from a different structure is the whole question.
+  const per={}; STRUCTS.forEach(s=>per[s.id]={e:null,d:1e9});
   let best=null,bd=1e9;
-  for(const e of ST.codebook){const d=dist(q,e.emb);if(d<bd){bd=d;best=e;}}
-  ST.match=best;
-  draw(render(best.obj,best.rot),'matchC',ST.colors[best.obj]);
-  const correct=best.obj===ST.truth.obj;
-  // A filament, a capsid ring and a globular blob all have rotations that map
-  // them onto themselves, so a geodesic angle is not an error for them.
-  const symmetric=(ST.truth.obj===2||ST.truth.obj===3||ST.truth.obj===0);
-  const angE=Math.round(mAng(best.rot,ST.truth.rot));
-  let html=`<div class="verdict">Identified: <b style="color:${correct?'var(--good)':'var(--bad)'}">${STRUCTS[best.obj].name}</b> ${correct?'✓':'✗'}</div>`;
-  html+=`<div class="summ">Truth: ${STRUCTS[ST.truth.obj].name} · lookup distance ${bd.toFixed(2)}`;
-  html+= symmetric?` · orientation partly ambiguous (symmetric)`:` · orientation error ≈ ${angE}°`;
-  html+=`<br>Searched <b>${ST.codebook.length}</b> cached embeddings · <b>0</b> renders at query time.</div>`;
+  for(const e of ST.codebook){const d=dist(q,e.emb);
+    if(d<per[e.obj].d)per[e.obj]={e,d};
+    if(d<bd){bd=d;best=e;}}
+  const ranked=STRUCTS.map(s=>({name:s.name,obj:s.id,d:per[s.id].d,e:per[s.id].e}))
+                      .sort((a,b)=>a.d-b.d);
+  const runner=ranked[1];
+  const margin=runner.d/bd;
+
+  // The second opinion fires when the book warned us about this entry, or when
+  // the margin is too thin to be worth trusting.
+  const flagged=!!best.rival;
+  let checked=null;
+  if(flagged||margin<MARGIN_T){
+    const mask=supportMask(ST.obs);
+    const cand=[{obj:best.obj,e:best},{obj:runner.obj,e:runner.e}];
+    if(flagged&&!cand.some(c=>c.e===best.rival.entry))
+      cand.push({obj:best.rival.entry.obj,e:best.rival.entry});
+    checked=cand.filter(c=>c.e&&c.e.raw)
+      .map(c=>({obj:c.obj,e:c.e,d:maskedDist(qRaw,c.e.raw,mask)}))
+      .sort((a,b)=>a.d-b.d);
+  }
+  // The plain lookup keeps the answer. See the note above on why.
+  const winner={obj:best.obj,e:best,d:bd};
+  ST.match=winner.e;
+  draw(render(winner.e.obj,winner.e.rot),'matchC',ST.colors[winner.e.obj]);
+
+  // Two answers survive when the second method picks a different entry, or when
+  // it cannot separate its own top two. Either way the honest output is both.
+  const secondPick = checked&&checked.length ? checked[0] : null;
+  const disagree = !!secondPick && secondPick.e!==best;
+  const alt = disagree ? secondPick
+            : (checked&&checked.length>1&&checked[1].d/Math.max(checked[0].d,1e-6)<MARGIN_T
+               ? checked[1] : null);
+  const cell=document.getElementById('rivalCell');
+  cell.hidden=!alt;document.getElementById('stage').classList.toggle('three',!!alt);
+  document.getElementById('matchH').innerHTML = alt?'POSSIBILITY 1':'CODEBOOK MATCH';
+  if(alt){
+    document.getElementById('rivalH').innerHTML='POSSIBILITY 2 &#9888;';
+    draw(render(alt.e.obj,alt.e.rot),'rivalC',ST.colors[alt.e.obj]);}
+
+  const idOK=winner.e.obj===ST.truth.obj;
+  const angE=Math.round(mAng(winner.e.rot,ST.truth.rot));
+  // Orientation is graded against what this entry actually swallowed at build
+  // time, not against a hardcoded list of which structures are symmetric. An
+  // entry that absorbed poses spanning 170 degrees cannot be wrong about
+  // orientation; one that absorbed a 12-degree neighbourhood can be.
+  const spread=winner.e.spread||0;
+  const poseOK=idOK&&(angE<=Math.max(25,spread));
+  const tone=!idOK?'var(--bad)':(poseOK?'var(--good)':'var(--warn)');
+
+  let html=`<div class="verdict">Identified: <b style="color:${tone}">${STRUCTS[winner.e.obj].name}</b> `;
+  html+= !idOK?'✗':poseOK?'✓'
+       :`<span class="badge" style="color:var(--warn)">⚠ partly identified</span>`;
+  if(alt)html+=` <span class="badge" style="color:var(--warn)">⚠ ambiguous</span>`;
+  html+=`</div>`;
+
+  if(idOK&&!poseOK)
+    html+=`<div class="caveat" style="color:var(--warn)"><b>Right structure, orientation only `+
+      `roughly.</b> The lookup named the structure and put it ${angE}° from the true pose, `+
+      `while the entry it returned only stands in for orientations within ${Math.round(spread)}° `+
+      `of itself. That is the price of a codebook: it pins the pose to the resolution of the `+
+      `views it kept, and no finer.</div>`;
+  if(alt)
+    html+= disagree
+      ? `<div class="caveat" style="color:var(--warn)"><b>Ambiguous: the two methods disagree.</b> `+
+        `The plain lookup returns ${STRUCTS[winner.e.obj].name}; comparing only the cells the `+
+        `occlusion left intact returns ${STRUCTS[alt.e.obj].name} instead. Both are shown above. `+
+        `The plain lookup keeps the answer because it is the more accurate of the two overall, `+
+        `but when they disagree it is worth knowing.</div>`
+      : `<div class="caveat" style="color:var(--warn)"><b>Ambiguous: two entries fit.</b> `+
+        `${STRUCTS[winner.e.obj].name} and ${STRUCTS[alt.e.obj].name} sit ${checked[0].d.toFixed(2)} `+
+        `and ${alt.d.toFixed(2)} away under the second comparison. Both are shown above; naming `+
+        `only the nearer would report a preference the data does not support.</div>`;
+
+  html+=`<div class="summ">Truth: ${STRUCTS[ST.truth.obj].name} · lookup distance ${bd.toFixed(2)} `+
+    `· runner-up ${runner.name} at ${runner.d.toFixed(2)} (margin ${margin.toFixed(2)}×)`;
+  html+= idOK?` · orientation error ≈ ${angE}° against a stored spread of ${Math.round(spread)}°`:'';
+  if(checked)
+    html+=`<br>${flagged?'The build flagged this entry as having a look-alike in another structure, so the':'The margin was thinner than '+MARGIN_T+'×, so the'} `+
+      `lookup was checked a second way: the same embedding over only the cells the occlusion `+
+      `left intact${disagree?', which <b>disagreed</b>':', which agreed'}.`;
+  html+=`<br>Searched <b>${ST.codebook.length}</b> cached embeddings · <b>0</b> renders at query time`+
+    `${checked?' · the second opinion costs 0 renders too':''}.</div>`;
   document.getElementById('idOut').innerHTML=html;
 }
 document.getElementById('newObs').onclick=newObs;

@@ -7,6 +7,10 @@
   :root{
     --ink:#e9e4d8; --dim:#8a8578; --line:#2a2a24;
     --panel:rgba(14,14,12,.72); --accent:#7fd1c8; --good:#8fd18a; --bad:#d18a8a;
+    /* the third verdict. Same three bytes as the other two, permuted again, so
+       a partly-right answer reads as a sibling of right and wrong, not a new
+       vocabulary. */
+    --warn:#d1c48a;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%;background:#0a0a09;color:var(--ink);overflow:hidden;
@@ -73,6 +77,8 @@
   .lab-inner{max-width:560px;margin:0 auto}
   .lead{font-size:12.5px;color:var(--dim);line-height:1.55;margin-bottom:16px}
   .lead b{color:var(--ink);font-weight:500}
+  .lead a{color:var(--accent);text-decoration:none;border-bottom:1px solid rgba(127,209,200,.35)}
+  .lead a:hover{border-bottom-color:var(--accent)}
   .cands{background:rgba(255,255,255,.02);border:1px solid var(--line);border-radius:12px;
     padding:12px;margin-bottom:14px}
   .cands h4{font-size:11px;color:var(--dim);font-weight:500;margin-bottom:10px;letter-spacing:.2px}
@@ -81,7 +87,12 @@
   .cands canvas{width:100%;max-width:74px;aspect-ratio:1;background:#0a0a09;border-radius:7px;border:1px solid var(--line)}
   .cands .cl{font-size:10px;color:var(--dim);margin-top:5px;line-height:1.3}
   .cands .cnote{font-size:10.5px;color:var(--dim);line-height:1.5;margin-top:11px}
+  /* look-alike rate, measured by the scan and printed under each candidate */
+  .cands .cflag{font-size:9.5px;line-height:1.3;margin-top:3px;font-variant-numeric:tabular-nums}
   .stage{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+  /* the third cell only exists when there is a second answer worth showing */
+  .stage.three{grid-template-columns:repeat(3,1fr)}
+  .stage.three .cell canvas{max-width:120px}
   .cell{background:rgba(255,255,255,.02);border:1px solid var(--line);border-radius:12px;padding:12px;text-align:center}
   .cell h4{font-size:11px;color:var(--dim);font-weight:500;margin-bottom:9px;letter-spacing:.2px}
   .cell canvas{width:100%;max-width:190px;aspect-ratio:1;background:#0a0a09;border-radius:8px;image-rendering:auto}
@@ -96,6 +107,12 @@
   .prog>div{height:100%;width:0;background:var(--accent);transition:width .05s linear}
   .verdict{font-size:15px;margin:4px 0 12px}
   .verdict b{font-weight:600}
+  /* first real badge in this file; colour arrives inline, the way the tick and
+     the cross already get theirs */
+  .badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:7px;
+    border:1px solid currentColor;vertical-align:2px;white-space:nowrap}
+  .caveat{font-size:12px;line-height:1.55;margin-top:10px;padding-left:10px;
+    border-left:2px solid currentColor}
   .meta{font-size:12px;color:var(--dim);line-height:1.6}
   .rank{margin-top:12px}
   .rank .r{display:flex;align-items:center;gap:10px;margin:5px 0;font-size:12px}
@@ -104,6 +121,25 @@
   .rank .bar>div{height:100%;background:var(--accent)}
   .rank .sc{width:42px;text-align:right;color:var(--dim);font-variant-numeric:tabular-nums}
   .empty{color:var(--dim);font-size:12.5px;text-align:center;padding:18px}
+
+  /* the no-training explainer. `*{margin:0;padding:0}` above strips list
+     markers, so the ol has to put its own indent back. */
+  .why{background:rgba(255,255,255,.02);border:1px solid var(--line);
+    border-radius:12px;padding:12px 14px;margin-bottom:24px}
+  .why>summary{font-size:12.5px;color:var(--accent);cursor:pointer;
+    list-style:none;user-select:none}
+  .why>summary::-webkit-details-marker{display:none}
+  .why>summary::before{content:'+ ';font-variant-numeric:tabular-nums}
+  .why[open]>summary::before{content:'2 '}
+  .why[open]>summary{margin-bottom:12px}
+  .why ol{padding-left:0;list-style:none;counter-reset:s}
+  .why li{counter-increment:s;position:relative;padding-left:26px;
+    margin-bottom:11px;font-size:12px;color:var(--dim);line-height:1.55}
+  .why li::before{content:counter(s);position:absolute;left:0;top:0;
+    font-size:11px;color:var(--accent);font-variant-numeric:tabular-nums}
+  .why li b{color:var(--ink);font-weight:500}
+  .why .close{font-size:11.5px;color:var(--dim);line-height:1.55;
+    border-top:1px solid var(--line);padding-top:11px;font-style:italic}
 </style>
 
 <a class="home" href="index.html">&larr;<span class="lbl"> Render to Recognize</span></a>
@@ -161,7 +197,7 @@
       <a href="https://en.wikipedia.org/wiki/3D_rotation_group">SO(3)</a>, then blurred and occluded. That degraded image is the observation.
       To recognize it, the lab re-renders every shape across a grid that covers the whole rotation group and keeps the closest match,
       then refines the winner locally. In-plane roll costs no renders at all, because rolling the camera about its own axis only spins the image.
-      There is no training here, only a fast renderer and a search.
+      There is no training here, only a fast renderer and a search &mdash; <a href="#why">step by step, why that is possible</a>.
     </div>
 
     <div class="cands">
@@ -171,9 +207,10 @@
         in one neutral grey, the same for all five shapes, so a match can never be a colour match.</div>
     </div>
 
-    <div class="stage">
+    <div class="stage" id="stage">
       <div class="cell"><h4>What the recognizer sees</h4><canvas id="obsC" width="64" height="64"></canvas></div>
       <div class="cell"><h4>Closest render found</h4><canvas id="matchC" width="64" height="64"></canvas></div>
+      <div class="cell" id="rivalCell" hidden><h4>Runner-up pose</h4><canvas id="rivalC" width="64" height="64"></canvas></div>
     </div>
 
     <div class="ctrls">
@@ -194,6 +231,52 @@
     </div>
 
     <div id="results" class="ctrls"></div>
+
+    <details class="why" id="why">
+      <summary>There is no training here. Step by step, why that is possible.</summary>
+      <ol>
+        <li><b>The problem is stated forwards, not backwards.</b> A classifier learns
+          <i>p(label&nbsp;|&nbsp;image)</i> from examples, because nobody can write that function down.
+          Here the opposite direction is known exactly: give me a shape and an orientation and I
+          will give you the image. Recognition is inverting a function we already have, not
+          learning one we don't.</li>
+        <li><b>That forward function cost nothing to obtain.</b> Every shape on this page is a
+          closed-form distance equation &mdash; the chair is a seat, a back and four legs under a
+          <code>min()</code>, about six lines. Nothing was fitted to anything, so there is no
+          dataset to collect and no weights to store.</li>
+        <li><b>The unknowns are small even though the image is not.</b> The observation is 64&times;64,
+          so 4,096 numbers. The answer is one of five identities plus a point in SO(3), which is
+          three numbers. A network would spend its capacity learning a map across the big space;
+          the answer never needed more than four dimensions.</li>
+        <li><b>So the search can be exhaustive instead of learned.</b> Cover the rotation group with
+          a grid, render every cell, keep the closest. Learning earns its keep when the forward
+          model is unknown or too slow to run at query time. Here it is neither, so the usual
+          reason to train never arises.</li>
+        <li><b>One symmetry is what makes the grid affordable.</b> Rolling the camera about its own
+          view axis only spins the resulting image, so a single render can stand in for every roll
+          of that view if you spin the observation to meet it. That turns 2,560 orientations per
+          shape into 160 renders. Without this step the grid would be sixteen times the cost and
+          the whole approach would stop being interactive. Cryo-EM handles in-plane rotation the
+          same way, for the same reason.</li>
+        <li><b>The comparison needs no learned features either.</b> The renderer emits the same kind
+          of picture as the observation, so the two can be subtracted directly &mdash; mean absolute
+          difference over the union of the silhouettes. There is no embedding to train because
+          there is no gap in representation to bridge.</li>
+        <li><b>What gets paid instead.</b> Compute at query time: about a thousand renders per
+          answer, here, rather than one forward pass. And two assumptions &mdash; that the shape
+          library is complete, and that the renderer is faithful to whatever made the observation.
+          Adding a sixth shape means writing an equation, not gathering data; but an object outside
+          the library cannot be recognized at all, only mis-assigned to the nearest thing that is.</li>
+        <li><b>How it fails, and how you can tell.</b> Under heavy occlusion it lands in the wrong
+          pose basin: right shape, wrong orientation. The verdict below says so in yellow when it
+          happens, and the search space above is labelled with each shape's measured look-alike
+          rate. Both of those are read straight off the same renderer &mdash; being able to point at
+          the reason for a mistake is the other thing you get for not training.</li>
+      </ol>
+      <div class="close">The honest boundary: this works because the world was authored. Real
+        recognition problems rarely hand you the generator, and when they don't, learning one from
+        examples is exactly what you are buying.</div>
+    </details>
   </div></div>
 </div>
 
@@ -574,6 +657,35 @@ function score(obs,cand,res){let err=0,n=0;
     if(oa>4||ca>4){const og=(obs[i*4]*0.299+obs[i*4+1]*0.587+obs[i*4+2]*0.114)/255;
       const cg=(cand[i*4]*0.299+cand[i*4+1]*0.587+cand[i*4+2]*0.114)/255;err+=Math.abs(og-cg);n++;}}
   return n?1-err/n:0;}
+// The same comparison on COVERAGE alone. This is the one that detects a shape's
+// own symmetries, and the distinction is not cosmetic: the light in shade() is
+// fixed in object space, so when the camera moves to a symmetric viewpoint the
+// outline repeats exactly while the shading does not. Measured over 12 random
+// poses each: a torus turned about its own axis scores 1.000 here and only
+// 0.777-0.957 on luminance; a holed cube at 90 degrees about its tunnel, 1.000
+// against 0.674. A chair, which has no symmetry at all, never exceeds 0.71. So
+// a large orientation error with sil()~1 is not an error, and luminance alone
+// could never have told us that.
+function sil(a,b,res){let err=0,n=0;
+  for(let i=0;i<res*res;i++){const oa=a[i*4+3]/255,ca=b[i*4+3]/255;
+    if(oa>0.016||ca>0.016){err+=Math.abs(oa-ca);n++;}}
+  return n?1-err/n:0;}
+
+// 10x10 alpha-weighted luma embedding, mean-subtracted and L2-normed. This is
+// the same descriptor micrograph-codebook-lab.html builds its codebook from,
+// deliberately: the two labs should decide "these two views are the same
+// picture" the same way. Coarse on purpose -- it is meant to survive blur.
+const G=10;
+function embed(buf){const e=new Float32Array(G*G),cell=RES/G;
+  for(let gy=0;gy<G;gy++)for(let gx=0;gx<G;gx++){let s=0,c=0;
+    for(let y=(gy*cell)|0;y<((gy+1)*cell)|0;y++)for(let x=(gx*cell)|0;x<((gx+1)*cell)|0;x++){
+      const i=(y*RES+x)*4,a=buf[i+3]/255;s+=(buf[i]*0.299+buf[i+1]*0.587+buf[i+2]*0.114)/255*a;c++;}
+    e[gy*G+gx]=s/c;}
+  let m=0;for(let i=0;i<e.length;i++)m+=e[i];m/=e.length;
+  let n=0;for(let i=0;i<e.length;i++){e[i]-=m;n+=e[i]*e[i];}n=Math.sqrt(n)||1;
+  for(let i=0;i<e.length;i++)e[i]/=n;return e;}
+function edist(a,b){let s=0;for(let i=0;i<a.length;i++){const d=a[i]-b[i];s+=d*d;}
+  return Math.sqrt(s);}
 
 // The buffer arriving here is always the neutral CANON render. `col` is a
 // false colour applied on the way to the screen, after score() has had its say.
@@ -632,6 +744,76 @@ const NVIEW=160, NROLL=16;
 const VIEWS=viewGrid(NVIEW);
 const ROLLS=(()=>{const a=[];for(let k=0;k<NROLL;k++)a.push(k/NROLL*6.283185307);return a;})();
 const POSES=NVIEW*NROLL, BUDGET=OBJECTS.length*NVIEW;
+
+// ---- LOOK-ALIKE INDEX -----------------------------------------------------
+// The grid above IS this lab's database, and nothing in it recorded which of
+// its entries are indistinguishable from each other. Two poses far apart in
+// SO(3) that render to the same picture are a trap: the search can rank the
+// wrong one first and no amount of local refinement will walk out of it,
+// because the wrong one is not a local error, it is a different basin.
+//
+// So sweep the grid once, up front, and write down those pairs. The gate on
+// mAng is the whole point -- adjacent grid cells are similar because the grid
+// is finite, which is resolution, not ambiguity. Only pairs that are FAR APART
+// in orientation and CLOSE in appearance are worth recording.
+//
+// DUP_T=0.30 was measured, not guessed. Over every pair more than SEP_DEG
+// apart, the share of views that have at least one look-alike comes out:
+// sphere 100%, torus 95%, holed cube 13%, three capsules 11%, chair 0%. That
+// ordering is the shapes' actual symmetry, recovered from pixels -- which is
+// why this replaces the hand-written table of "symmetric" shapes that used to
+// live down in finish(). At 0.42 the chair starts flagging itself at 22% and
+// the measurement stops meaning anything; at 0.20 the torus drops to 57%.
+const SCAN_ROLLS=8, SEP_DEG=25, DUP_T=0.30;
+const SCAN_ANG=(()=>{const a=[];for(let k=0;k<SCAN_ROLLS;k++)a.push(k/SCAN_ROLLS*6.283185307);return a;})();
+// Every scan pose, once. These do not depend on the shape, so all five sweeps
+// share them.
+const SCANROT=VIEWS.map(v=>SCAN_ANG.map(a=>mMul(v,mAxis(0,0,1,a))));
+const DUP={started:false,done:false,rate:{},look:{}};
+
+// Nearest scan pose to an arbitrary orientation, as [viewIndex, rollIndex].
+function nearestScan(rot){
+  let bi=0,bk=0,bd=1e9;
+  for(let i=0;i<NVIEW;i++)for(let k=0;k<SCAN_ROLLS;k++){
+    const d=mAng(SCANROT[i][k],rot);if(d<bd){bd=d;bi=i;bk=k;}}
+  return [bi,bk];
+}
+
+// Sliced across frames the same way the search is, so the tab stays live while
+// it runs. Whole sweep is ~800 renders and measures about 2 s.
+function startScan(){
+  if(DUP.started)return; DUP.started=true;
+  let oi=0,phase=0,i=0,emb=null;
+  function step(){
+    const t0=performance.now();
+    while(performance.now()-t0<12){
+      if(oi>=OBJECTS.length){doneScan();return;}
+      const o=OBJECTS[oi].id;
+      if(phase===0){                       // render each view, embed every roll
+        if(i===0)emb=[];
+        const buf=render(o,VIEWS[i],0.05,0.45,FBO),er=[];
+        for(let k=0;k<SCAN_ROLLS;k++)er.push(embed(k?rotBuf(buf,RES,SCAN_ANG[k]):buf));
+        emb.push(er);
+        if(++i>=NVIEW){phase=1;i=0;DUP.look[o]=new Map();}
+      }else{                               // one row of the pair test per pass
+        const rivals=[];
+        for(let j=0;j<NVIEW;j++){ if(j===i)continue;
+          for(let k=0;k<SCAN_ROLLS;k++){
+            if(mAng(SCANROT[i][0],SCANROT[j][k])<=SEP_DEG)continue;
+            const d=edist(emb[i][0],emb[j][k]);
+            if(d<DUP_T){rivals.push({view:j,roll:k,d});}}}
+        if(rivals.length){rivals.sort((a,b)=>a.d-b.d);
+          DUP.look[o].set(i,rivals.slice(0,3));}
+        if(++i>=NVIEW){
+          DUP.rate[o]=Math.round(DUP.look[o].size/NVIEW*100);
+          oi++;phase=0;i=0;emb=null;}
+      }
+    }
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+function doneScan(){DUP.done=true;paintFlags();}
 // Coarse-to-fine, and deliberately multi-hypothesis. Refining only the single
 // best grid cell is what a first version did, and it was wrong: at this grid
 // spacing the top-scoring cell sits in the wrong basin often enough that the
@@ -641,16 +823,48 @@ const POSES=NVIEW*NROLL, BUDGET=OBJECTS.length*NVIEW;
 // lets the identity itself change), and the radius shrinks each stage.
 const SEEDS=2;
 const REFINE=[{n:8,deg:24},{n:8,deg:9},{n:32,deg:3.5}];
+// One last stage, after the winner has been refined: go and look at the other
+// basins on purpose. Two things feed it -- the look-alikes recorded when the
+// grid was scanned, and the distinct basins this particular observation threw
+// up, which is the half that catches an ambiguity occlusion created rather than
+// one the shape was born with. Measured over 18 runs at blur 0.32 / occlusion
+// 0.49, this recovers a run the main search had lost roughly one time in six,
+// and by construction it can never make an answer worse: consider() adopts a
+// pose only when it scores higher.
+// The two rival sources must NOT be treated alike, and this was measured the
+// hard way. A basin rival is a genuinely different fit, and adopting it when it
+// scores higher is SAFE but not dramatic: over 130 runs at blur 0.32 /
+// occlusion 0.49 it improved the score on about one run in seven, converted 2
+// wrong-pose answers into right ones (164deg->6deg and 29deg->11deg) and never
+// turned a right answer wrong. It cannot, by construction -- consider() adopts
+// only a strictly higher score. The gains are small (mean 0.006, and often
+// 0.001) because the landscape between basins is very nearly flat, which is
+// also why the yellow badge below has to exist: most wrong-pose runs are not
+// recoverable by searching harder, only reportable.
+//
+// A look-alike rival is the opposite: the index flags it precisely BECAUSE the
+// pixels cannot separate it from the answer, so its score is a coin flip. An
+// earlier version let look-alikes compete and it turned a correct 15-degree
+// answer into a 97-degree one; over 40 runs that version fixed 0 and broke 2.
+//
+// So basins compete, and look-alikes only testify: LOOKN is scored to the same
+// depth for a fair comparison, but through probe(), which cannot change the
+// answer. That split is the whole point -- the index predicts at build time
+// which poses will be indistinguishable, and this stage confirms it at query
+// time without letting the prediction corrupt the result.
+const BASINS=3, LOOKN=1, RIVAL={n:16,deg:3.5};
 const P0=OBJECTS.length*NVIEW,               // the grid itself, one render per view
       PS=OBJECTS.length*SEEDS,               // re-score the seeds on the sharp image
       P1=OBJECTS.length*SEEDS*REFINE[0].n,   // around each object's top two cells
       P2=OBJECTS.length*REFINE[1].n,         // around each object's best so far
-      P3=REFINE[2].n;                        // around the overall winner
-const REFINEN=PS+P1+P2+P3, TOTAL=P0+REFINEN;
+      P3=REFINE[2].n,                        // around the overall winner
+      P4=BASINS*(1+RIVAL.n),                 // around the rival basins, adoptable
+      P5=LOOKN*(1+RIVAL.n);                  // and the flagged look-alike, not
+const REFINEN=PS+P1+P2+P3+P4+P5, TOTAL=P0+REFINEN;
 function setBudget(done){
   document.getElementById('budget').innerHTML=
     `${OBJECTS.length} shapes &times; ${POSES.toLocaleString()} orientations from ` +
-    `<b>${BUDGET}</b> renders (in-plane roll is free), then <b>${REFINEN}</b> to refine` +
+    `<b>${BUDGET}</b> renders (in-plane roll is free), then <b>${REFINEN}</b> to refine and check rivals` +
     (done>0?` &middot; searched <b>${done}</b>`:'');
 }
 
@@ -665,10 +879,22 @@ function drawCandidates(){
     const wrap=document.createElement('div');wrap.className='c';
     const c=document.createElement('canvas');c.width=c.height=RES;
     const lab=document.createElement('div');lab.className='cl';lab.textContent=o.name;
-    wrap.appendChild(c);wrap.appendChild(lab);strip.appendChild(wrap);
+    const fl=document.createElement('div');fl.className='cflag';fl.id='flag'+o.id;
+    wrap.appendChild(c);wrap.appendChild(lab);wrap.appendChild(fl);strip.appendChild(wrap);
     paint(render(o.id,VIEW0,0.05,0.45,FBO),c.getContext('2d'),S.colors[o.id]);
   });
-  candsDrawn=true;
+  candsDrawn=true;paintFlags();
+}
+// What the scan found, printed under each candidate. A shape with a high rate
+// has poses the recognizer cannot tell apart from pixels, so an orientation
+// error on it may not be an error at all -- which is exactly what finish()
+// goes on to check per run.
+function paintFlags(){
+  if(!DUP.done)return;
+  OBJECTS.forEach(o=>{const el=document.getElementById('flag'+o.id);if(!el)return;
+    const r=DUP.rate[o.id]||0;
+    el.style.color=r>0?'var(--warn)':'var(--dim)';
+    el.innerHTML=r>0?`&#9888; ${r}% look-alike`:'no look-alikes';});
 }
 
 function recognize(){
@@ -681,6 +907,13 @@ function recognize(){
   const best={}; OBJECTS.forEach(o=>best[o.id]={s:-1,rot:VIEWS[0]});
   // The seeds the refinement starts from, filled during the grid sweep only.
   const top={}; OBJECTS.forEach(o=>top[o.id]=[]);
+  // A wider pool of grid cells, kept alongside `top` and left untouched by the
+  // refinement. `top` holds the best two cells outright and they are usually
+  // neighbours; the rival stage needs cells from DIFFERENT basins, which only a
+  // deeper pool can supply.
+  const POOL=24;
+  const pool={}; OBJECTS.forEach(o=>pool[o.id]=[]);
+  const RIV={obj:-1,list:null,look:null,mainS:0,mainRot:null};
   let overall={s:-1,obj:0,rot:VIEWS[0]};
   setBusy(true);
   const bar=document.getElementById('progBar');
@@ -692,6 +925,37 @@ function recognize(){
     if(s>best[obj].s)best[obj]={s,rot};
     if(s>overall.s){overall={s,obj,rot};
       draw(render(obj,rot,0.05,0.45,FBO),'matchC',S.colors[obj]);}
+    return s;
+  }
+  // The rivals to spend the last stage on: poses far enough from the winner to
+  // be a different answer rather than a nearby one.
+  // Score a pose without letting it become the answer.
+  function probe(obj,rot){return score(R.obs,render(obj,rot,0.05,0.45,FBO),RES);}
+  // (a) The distinct basins THIS observation threw up. These compete: an
+  // ambiguity that occlusion created is invisible to an index of clean renders,
+  // so the only way to find it is to look at the query's own score landscape.
+  function buildRivals(obj,winner){
+    const out=[];
+    for(const c of pool[obj]){ if(out.length>=BASINS)break;
+      if(mAng(c.rot,winner)<=SEP_DEG)continue;
+      if(!out.every(x=>mAng(x.rot,c.rot)>SEP_DEG))continue;
+      out.push({rot:c.rot,bestRot:c.rot,s:-1,src:'basin'});}
+    return out;
+  }
+  // (b) A pose the scan already flagged as rendering like this one but sitting
+  // nowhere near it. The index is keyed by view at roll 0, and roll is
+  // equivariant -- a view spun by r looks like its look-alike spun by the same
+  // r -- so the stored roll offset just adds.
+  function buildLookalikes(obj,winner){
+    const out=[];
+    if(!DUP.done||!DUP.look[obj])return out;
+    const [vi,ri]=nearestScan(winner);
+    for(const rv of (DUP.look[obj].get(vi)||[])){
+      if(out.length>=LOOKN)break;
+      const rot=SCANROT[rv.view][(rv.roll+ri)%SCAN_ROLLS];
+      if(mAng(rot,winner)<=SEP_DEG)continue;
+      out.push({rot,bestRot:rot,s:-1,d:rv.d,src:'look-alike'});}
+    return out;
   }
   let done=0;
   function step(){
@@ -701,12 +965,15 @@ function recognize(){
     for(let n=0;n<slice&&done<TOTAL;n++,done++){
       let k=done;
       if(k<P0){                         // the grid: one render, every roll scored
-        const j=jobs[k], buf=render(j.obj,j.rot,0.05,0.45,FBO), a=top[j.obj];
+        const j=jobs[k], buf=render(j.obj,j.rot,0.05,0.45,FBO), a=top[j.obj], q=pool[j.obj];
         for(let r=0;r<NROLL;r++){
           const s=score(obsR[r],buf,RES);
-          if(a.length<SEEDS||s>a[a.length-1].s){
-            a.push({s,rot:mMul(j.rot,mAxis(0,0,1,ROLLS[r]))});
-            a.sort((x,y)=>y.s-x.s);if(a.length>SEEDS)a.length=SEEDS;}}
+          if(a.length<SEEDS||s>a[a.length-1].s||q.length<POOL||s>q[q.length-1].s){
+            const rot=mMul(j.rot,mAxis(0,0,1,ROLLS[r]));
+            if(a.length<SEEDS||s>a[a.length-1].s){
+              a.push({s,rot});a.sort((x,y)=>y.s-x.s);if(a.length>SEEDS)a.length=SEEDS;}
+            if(q.length<POOL||s>q[q.length-1].s){
+              q.push({s,rot});q.sort((x,y)=>y.s-x.s);if(q.length>POOL)q.length=POOL;}}}
         continue;}
       k-=P0;
       if(k<PS){                         // re-seat: sharp score for each seed
@@ -724,31 +991,158 @@ function recognize(){
         const oi=(k/REFINE[1].n)|0, o=OBJECTS[oi].id;
         consider(o,mJitter(best[o].rot,REFINE[1].deg));
         continue;}
-      consider(overall.obj,mJitter(overall.rot,REFINE[2].deg));   // stage 3
+      k-=P2;
+      if(k<P3){consider(overall.obj,mJitter(overall.rot,REFINE[2].deg));continue;} // stage 3
+      k-=P3;
+      // stage 4: the rival basins. Snapshot the winner first, so that if a rival
+      // goes on to beat it we can still say what it displaced.
+      if(k===0){RIV.obj=overall.obj;RIV.mainS=overall.s;RIV.mainRot=overall.rot;
+        RIV.list=buildRivals(overall.obj,overall.rot);
+        RIV.look=buildLookalikes(overall.obj,overall.rot);}
+      const per=1+RIVAL.n;
+      if(k<P4){                         // basins: refined through consider(), so
+        const rv=RIV.list[(k/per)|0], jj=k%per;   // a better one is adopted
+        if(rv){const rot = jj===0 ? rv.rot : mJitter(rv.bestRot,RIVAL.deg);
+          const s = consider(RIV.obj,rot);
+          if(s>rv.s){rv.s=s;rv.bestRot=rot;}}
+        continue;}
+      k-=P4;                            // stage 5: the flagged look-alike, which
+      const lk=RIV.look[(k/per)|0], jj=k%per;     // testifies but cannot win
+      if(lk){const rot = jj===0 ? lk.rot : mJitter(lk.bestRot,RIVAL.deg);
+        const s = probe(RIV.obj,rot);
+        if(s>lk.s){lk.s=s;lk.bestRot=rot;}}
     }
     bar.style.width=(done/TOTAL*100)+'%';
     setBudget(done);
-    if(done<TOTAL)requestAnimationFrame(step); else finish(best,overall);
+    if(done<TOTAL)requestAnimationFrame(step); else finish(best,overall,RIV);
   }
   requestAnimationFrame(step);
 }
 
-// Orientation only means something for a shape no rotation maps onto itself.
-// A sphere has none, a torus has a continuous one, and the holed cube has the
-// tunnel plus the cube's own symmetries, so their angles are not errors.
-const AMBIG={0:'pose ambiguous (sphere)',
-             3:'orientation ambiguous (symmetric)',
-             4:'orientation ambiguous (symmetric)'};
-function finish(best,overall){
+// Getting the shape right and the pose wrong is not a success and it is not a
+// failure, so it does not get a tick or a cross. Two numbers decide which of the
+// three it is.
+//
+// POSE_OK_DEG: after the final 3.5-degree refinement stage a right answer lands
+// within a few degrees. Measured over 32 runs at blur 0.32 / occlusion 0.49, the
+// good answers came in at 1-14 degrees and the wrong-basin ones at 48-180. The
+// gap is wide and 15 sits in the middle of it.
+//
+// SYM_T: a large angle is NOT an error when the shape looks the same from both
+// orientations, which is what sil() detects -- see the note on it above. True
+// symmetries measure 1.000 and the chair never passes 0.71, so 0.98 sits in open
+// space. This is what used to be the hardcoded AMBIG table: rather than assert
+// that a torus has no meaningful orientation, check whether THIS pair of poses
+// actually renders alike. The table was also too generous -- the sphere here is
+// carved with fBm, so its pose IS recoverable, and the old code excused it anyway.
+const POSE_OK_DEG=15, SYM_T=0.98;
+// A runner-up this close means the score landscape is genuinely flat between two
+// answers. Note what this is NOT: measured over 18 runs, the runner-up ratio on
+// runs that went wrong (0.946-0.998) overlaps the ratio on runs that went right
+// (0.874-0.999) almost completely, so it cannot be read as a confidence score.
+// It only supports the literal claim that two poses fit about equally well.
+const TIE_REL=0.995;
+function finish(best,overall,RIV){
   setBusy(false);document.getElementById('progBar').style.width='0';
   draw(render(overall.obj,overall.rot,0.05,0.45,FBO),'matchC',S.colors[overall.obj]);
-  const correct = overall.obj===R.truth.obj;
+  const idOK = overall.obj===R.truth.obj;
   const ranked=OBJECTS.map(o=>({name:o.name,s:best[o.id].s})).sort((a,b)=>b.s-a.s);
   const trueName=OBJECTS[R.truth.obj].name;
-  let html=`<div class="verdict">Guess: <b style="color:${correct?'var(--good)':'var(--bad)'}">${OBJECTS[overall.obj].name}</b> ${correct?'✓':'✗'}</div>`;
+
+  const angErr=Math.round(mAng(overall.rot,R.truth.rot));
+  // Only meaningful when the shape is right; comparing a chair's outline to a
+  // torus's would answer a question nobody asked.
+  const symAgree = idOK ? sil(render(R.truth.obj,R.truth.rot,0.05,0.45,FBO),
+                              render(overall.obj,overall.rot,0.05,0.45,FBO),RES) : 0;
+  const symmetric = idOK && angErr>POSE_OK_DEG && symAgree>=SYM_T;
+  const poseOK = idOK && (angErr<=POSE_OK_DEG || symmetric);
+
+  // What the basin rivals displaced, or were displaced by.
+  const adopted = !!(RIV && RIV.list && RIV.list.length && overall.s>RIV.mainS);
+  let altRot=null,altS=0;
+  if(RIV&&RIV.list&&RIV.list.length){
+    if(adopted){altRot=RIV.mainRot;altS=RIV.mainS;}
+    else{const b=RIV.list.reduce((x,y)=>y.s>x.s?y:x);if(b.s>0){altRot=b.bestRot;altS=b.s;}}}
+  const basinTie = !!altRot && overall.s>0 && altS/overall.s>=TIE_REL;
+
+  // And what the look-alike index predicted, checked against this observation.
+  const lk = RIV&&RIV.look&&RIV.look.length&&RIV.look[0].s>0 ? RIV.look[0] : null;
+  const lookTie = !!lk && overall.s>0 && lk.s/overall.s>=TIE_REL;
+
+  // The flagged look-alike is the more interesting of the two when both fire:
+  // it is the one the database predicted before this observation existed.
+  const showRot = lookTie ? lk.bestRot : (basinTie ? altRot : null);
+  const showS   = lookTie ? lk.s : altS;
+  const cell=document.getElementById('rivalCell'),stage=document.getElementById('stage');
+  const mainH=document.querySelector('#stage .cell:nth-child(2) h4');
+  cell.hidden=!showRot;stage.classList.toggle('three',!!showRot);
+  // When the two really are tied, neither is "the answer" and the other a
+  // footnote. Label them as what they are: two poses the observation cannot
+  // choose between, with the flagged one named as flagged.
+  mainH.innerHTML = showRot
+    ? `Possibility 1 &middot; ${overall.s.toFixed(2)}`
+    : 'Closest render found';
+  if(showRot){
+    cell.querySelector('h4').innerHTML =
+      `Possibility 2 &middot; ${showS.toFixed(2)}${lookTie?' &#9888;':''}`;
+    draw(render(overall.obj,showRot,0.05,0.45,FBO),'rivalC',S.colors[overall.obj]);}
+
+  const tone = !idOK?'var(--bad)':(poseOK?'var(--good)':'var(--warn)');
+  let html=`<div class="verdict">Guess: <b style="color:${tone}">${OBJECTS[overall.obj].name}</b> `;
+  html+= !idOK ? '✗'
+       : poseOK ? '✓'
+       : `<span class="badge" style="color:var(--warn)">⚠ partly recognized</span>`;
+  // A right answer can still be an ambiguous one, and the two facts are
+  // independent: this badge rides alongside the tick rather than replacing it.
+  if(showRot)
+    html+=` <span class="badge" style="color:var(--warn)">⚠ ambiguous pose</span>`;
+  html+=`</div>`;
+
+  // Two different failures wear the same badge, and saying "different basin" about
+  // a 17-degree miss would be false. Past ~45 degrees the answer really is in the
+  // wrong basin; below it the search found the right neighbourhood and stopped
+  // short inside it, which is a refinement miss and nothing worse.
+  if(idOK&&!poseOK)
+    html+= angErr>45
+      ? `<div class="caveat" style="color:var(--warn)"><b>Right shape, wrong pose.</b> `+
+        `The identity is correct and the orientation is not: the answer sits ${angErr}° from `+
+        `the true pose and the two renders share only ${symAgree.toFixed(2)} of their outline. `+
+        `That is a different basin rather than a near miss, and local refinement cannot walk `+
+        `out of one — which is why the search carries several hypotheses instead of `+
+        `polishing the single best cell.</div>`
+      : `<div class="caveat" style="color:var(--warn)"><b>Right shape, pose only roughly.</b> `+
+        `The identity is correct and the search reached the right neighbourhood, then stopped `+
+        `${angErr}° short of the true pose (outline agreement ${symAgree.toFixed(2)}). `+
+        `That is the grid's resolution showing through, not a wrong answer.</div>`;
+
+  if(showRot)
+    html+=`<div class="caveat" style="color:var(--warn)"><b>Ambiguous: two poses fit.</b> `+
+      `Both are shown above, ${Math.round(mAng(showRot,overall.rot))}° apart, scoring `+
+      `${overall.s.toFixed(2)} and ${showS.toFixed(2)}. Picking the higher of those is not a `+
+      `meaningful preference at this margin, so both are reported.</div>`;
+
   html+=`<div class="meta">Truth: ${trueName} &middot; match score ${overall.s.toFixed(2)}`;
-  html+= AMBIG[R.truth.obj] ? ` &middot; ${AMBIG[R.truth.obj]}`
-       : ` &middot; orientation error ≈ ${Math.round(mAng(overall.rot,R.truth.rot))}°`;
+  html+= !idOK ? '' : ` &middot; orientation error ≈ ${angErr}°`;
+  if(symmetric)
+    html+=` &middot; not an error: this shape's outline is identical there `+
+      `(silhouette agreement ${symAgree.toFixed(2)})`;
+  if(basinTie)
+    html+=`<br>A second pose ${Math.round(mAng(altRot,overall.rot))}° away fits almost as `+
+      `well (${altS.toFixed(2)} against ${overall.s.toFixed(2)}), so this observation does not `+
+      `pin the orientation down on its own.`;
+  if(adopted)
+    html+=`<br>The rival stage reached that pose from another basin and it scored higher, so it `+
+      `was adopted.`;
+  if(lk)
+    html+= lookTie
+      ? `<br>The look-alike index flagged a pose ${Math.round(mAng(lk.bestRot,overall.rot))}° `+
+        `away as indistinguishable from this one when the grid was scanned, and on this `+
+        `observation it scores ${lk.s.toFixed(2)} against ${overall.s.toFixed(2)} — confirmed. `+
+        `It is shown above but was never allowed to win: a pose flagged as indistinguishable `+
+        `cannot be chosen on score.`
+      : `<br>The look-alike index flagged a pose ${Math.round(mAng(lk.bestRot,overall.rot))}° `+
+        `away, but on this observation it only reaches ${lk.s.toFixed(2)} against `+
+        `${overall.s.toFixed(2)}, so the degradation left enough to separate them.`;
   html+=`</div><div class="rank">`;
   const max=ranked[0].s;
   ranked.forEach(r=>{html+=`<div class="r"><div class="name">${r.name}</div><div class="bar"><div style="width:${Math.max(0,r.s/max*100)}%"></div></div><div class="sc">${r.s.toFixed(2)}</div></div>`;});
@@ -776,6 +1170,10 @@ function tab(sculpt){sculptOn=sculpt;
     // Never land on two blank canvases: draw the search space and make an
     // observation on the first visit.
     drawCandidates();
+    // Build the look-alike index in the background. Nothing waits on it: if the
+    // user hits Recognize first, the rival stage simply runs on this query's own
+    // basins until the index lands.
+    startScan();
     if(!R.obs)newObservation();
   }
 }
